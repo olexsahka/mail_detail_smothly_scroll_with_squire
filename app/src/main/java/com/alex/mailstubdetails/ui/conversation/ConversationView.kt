@@ -92,6 +92,11 @@ fun ConversationView(
                     fun onGeometry(payloadJson: String) {
                         container.onGeometryJson(payloadJson)
                     }
+
+                    @JavascriptInterface
+                    fun onViewport(scale: Float, pageTopCss: Float) {
+                        container.onViewportUpdate(scale, pageTopCss)
+                    }
                 },
                 "Bridge"
             )

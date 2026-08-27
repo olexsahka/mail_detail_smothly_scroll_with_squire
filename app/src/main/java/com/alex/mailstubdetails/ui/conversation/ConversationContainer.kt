@@ -7,22 +7,47 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
 import kotlin.math.abs
+import kotlin.math.roundToInt
 import org.json.JSONObject
 
 /**
  * ViewGroup that hosts a single [ConversationWebView] plus N native overlay
  * Views positioned on top of it — the AOSP UnifiedEmail pattern.
  *
+ * ### Invariant (Gmail-style: static overlays over a zooming body)
+ * Overlays keep their density-only Compose size at every pinch factor —
+ * they do NOT visually scale with the WebView compositor. Only their
+ * *top* is anchored to the top of the HTML spacer they sit on. As the
+ * user zooms in, the spacer's device height grows past the overlay's
+ * fixed device height, creating a visible gap between the overlay's
+ * bottom and the DOM content that follows — this is the same "extra
+ * space during pinch" Gmail exposes. It disappears again at zoom = 1.
+ *
+ * Spacer CSS heights are pushed as `measuredHeight / initialScale` — a
+ * *constant* number of CSS px, invariant to user pinch. Pushing a new
+ * spacer height per pinch tick would force a JS reflow every frame,
+ * mid-pinch, producing visible flicker in the WebView and jumpy overlay
+ * positions.
+ *
+ * ### Realtime viewport (JS `visualViewport` → `Bridge.onViewport`)
+ * `WebViewClient.onScaleChanged` is sparse and lags the compositor by 1-2
+ * frames — using it directly as the source of truth for overlay position
+ * produced visible per-frame jerks during pinch. We instead listen to the
+ * DOM `visualViewport` events in `conversation.js` and forward `{scale,
+ * pageTop}` to [onViewportUpdate] every frame the compositor moves. That
+ * feeds [positionOverlays] with the *actual* current compositor state, so
+ * overlays track the DOM without lag and no damping is required.
+ *
  * ### Ownership
  * * The WebView owns all vertical scrolling. It fills the container.
- * * Overlays are laid out at (0, 0) and moved by [View.setTranslationY]
- *   to their target position each frame the WebView reports a scroll or a
- *   scale change.
+ * * Overlays are laid out via [View.layout] to their target device-px
+ *   position each frame that a scroll, scale, or overlay-measurement change
+ *   is scheduled through [requestGeometryUpdate].
  *
  * ### Coordinate spaces
  * * **CSS px** — what JS reports (`getBoundingClientRect().top`).
  * * **Device px** — CSS px × [ConversationWebView.currentScale].
- * * **Screen px** — device px − `webView.scrollY`.
+ * * **Screen px (container-local)** — device px − `webView.scrollY`.
  *
  * ### Flow
  * ```
@@ -31,7 +56,7 @@ import org.json.JSONObject
  *   container ◀────────── onGeometry(json) via @JavascriptInterface ◀─── measurePositions()
  *                                     │
  *                                     ▼
- *                                positionOverlays()
+ *                       requestGeometryUpdate() → 1 layout pass per frame
  * ```
  */
 class ConversationContainer @JvmOverloads constructor(
@@ -64,6 +89,9 @@ class ConversationContainer @JvmOverloads constructor(
 
     private var appBarHeightPx: Int = 0
 
+    /** Set by [requestGeometryUpdate]; cleared inside the postOnAnimation runnable. */
+    private var geometryUpdatePosted: Boolean = false
+
     private class Overlay(
         val id: String,
         val view: View,
@@ -73,10 +101,6 @@ class ConversationContainer @JvmOverloads constructor(
         /** True once JS has reported a real geometry for this overlay. */
         var positioned: Boolean = false
     )
-
-    companion object {
-        const val APP_BAR_OVERLAY_ID: String = "app-bar"
-    }
 
     private val touchSlop: Int = ViewConfiguration.get(context).scaledTouchSlop
     private var gestureInitialX: Float = 0f
@@ -89,28 +113,69 @@ class ConversationContainer @JvmOverloads constructor(
      * mid-gesture would cancel its in-flight handling.
      */
     private var interceptForCurrentGesture: Boolean = false
+
     /**
-     * True while ≥2 pointers are down anywhere in the container — treated as
-     * an in-progress pinch. [positionOverlays] early-returns while this is set
-     * so overlays stay frozen at their pre-pinch screen positions; on the
-     * final UP we unfreeze and snap to the new content-anchored positions.
+     * True while ≥ 2 pointers are down (i.e. a pinch is in progress on
+     * the WebView's native compositor).
+     *
+     * Overlays follow the pinch every frame via [onViewportUpdate], so no
+     * damping / freeze is needed — they stay flush with their spacer at
+     * any scale.
+     *
+     * The flag still gates scrollY propagation to the outer CompactAppBar
+     * swap threshold — WebView adjusts scrollY per pinch tick to keep the
+     * focal point stable, and those transients would flap the compact-bar
+     * reveal.
      */
-    private var isPinching: Boolean = false
+    private var pinchActive: Boolean = false
+
+    /* ── Realtime viewport state (JS bridge → [onViewportUpdate]) ───────── */
+
+    /** Latest `visualViewport.scale` reported from JS, or 1 if none yet. */
+    private var bridgeScale: Float = 1f
+
+    /** Latest `visualViewport.pageTop` (CSS px) reported from JS. */
+    private var bridgePageTopCss: Float = 0f
+
+    /** True after the JS reporter has fired at least once. */
+    private var bridgeHasValue: Boolean = false
+
+    companion object {
+        const val APP_BAR_OVERLAY_ID: String = "app-bar"
+    }
 
     init {
+        // Defensive clipping: overlays live at (0,0,w,h) with negative
+        // translationY when scrolled off-top. We must NOT let them bleed
+        // above the container's bounds (which sit below the status-bar
+        // inset once Scaffold applies contentWindowInsets), otherwise
+        // native compose content shows in the status-bar area.
+        clipChildren = true
+        clipToPadding = true
         addView(
             webView,
             LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
         )
         webView.scrollListener = ConversationWebView.ScrollListener { newY, _ ->
+            // Reposition SYNCHRONOUSLY in the same frame the WebView reports
+            // its new scrollY. Routing through postOnAnimation would defer by
+            // one frame and produce a visible lag between the HTML content
+            // (already at new scrollY) and the overlay (still at old y).
             positionOverlays()
-            onScrollChanged(newY)
+            // During pinch the WebView adjusts scrollY per-frame to keep the
+            // focal point stable. Propagating those transients would make the
+            // compact-app-bar swap threshold flap and the CompactAppBar
+            // animate in/out mid-gesture. Freeze the outer scrollY state
+            // until pinch ends; setJsPinchActive(false) re-fires it once.
+            if (!pinchActive) onScrollChanged(newY)
         }
         webView.scaleListener = ConversationWebView.ScaleListener {
-            // Overlays scaleX/scaleY track webView.currentScale (see
-            // positionOverlays), so their visual size matches the DOM spacer
-            // at every pinch frame — no need to push a new spacer css height.
+            // Same reasoning as scroll: apply in the same frame the WebView
+            // committed the new scale.
             positionOverlays()
+            // No spacer push here — spacer CSS is invariant to zoom (see
+            // pushSpacerHeights). Pushing per pinch tick was the previous
+            // behavior and caused visible WebView reflow flicker.
         }
     }
 
@@ -140,9 +205,6 @@ class ConversationContainer @JvmOverloads constructor(
             )
             changed = true
         }
-        // Skip requestLayout when nothing changed. Compose recompositions
-        // (fired on every scroll delta during pinch) can otherwise trigger
-        // repeated re-measure passes that make overlays wobble visually.
         if (changed) requestLayout()
     }
 
@@ -152,6 +214,24 @@ class ConversationContainer @JvmOverloads constructor(
      */
     fun onGeometryJson(payloadJson: String) {
         post { applyGeometry(payloadJson) }
+    }
+
+    /**
+     * Bridge callback — invoked from JS `visualViewport` scroll/resize
+     * events with the compositor's current [scale] (pinch factor, 1.0 =
+     * no zoom) and [pageTopCss] (CSS px scrolled from top of document).
+     *
+     * Runs on the WebView's binder thread; posts to the UI thread and
+     * repositions overlays synchronously so they track the DOM without
+     * waiting for the sparse `WebViewClient.onScaleChanged` callback.
+     */
+    fun onViewportUpdate(scale: Float, pageTopCss: Float) {
+        post {
+            bridgeScale = scale
+            bridgePageTopCss = pageTopCss
+            bridgeHasValue = true
+            positionOverlays()
+        }
     }
 
     private fun applyGeometry(payloadJson: String) {
@@ -167,11 +247,14 @@ class ConversationContainer @JvmOverloads constructor(
                 ov.heightCss = o.optDouble("height", 0.0).toFloat()
                 ov.positioned = true
             }
-            positionOverlays()
-            // The DOM now definitely contains our spacer elements — push the
-            // measured overlay heights so JS reserves the right amount of
-            // room and re-reports positions.
+            // (Re-)push spacer heights: applyGeometry is the first callback
+            // after renderThread() rebuilds the DOM, so any push we tried
+            // earlier hit a non-existent element. Dedup by lastSentSpacerCssPx
+            // prevents an infinite JS ↔ native ping-pong when heights match.
             pushSpacerHeights()
+            // topCss changed — reposition synchronously so the UI doesn't
+            // flicker one frame behind the DOM update.
+            positionOverlays()
         } catch (_: Exception) {
             // Malformed payloads are non-fatal — next measure will retry.
         }
@@ -188,6 +271,33 @@ class ConversationContainer @JvmOverloads constructor(
     }
 
     /* ── Touch: forward vertical drag & pinch from overlays to the WebView ─ */
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        // Track pinch state here (not in onInterceptTouchEvent) because once
+        // we've intercepted a gesture, onInterceptTouchEvent stops being
+        // called — but a user can still put a second finger down mid-scroll
+        // to start a pinch, and we need to see it.
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                if (ev.pointerCount >= 2) pinchActive = true
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                // pointerCount includes the pointer being lifted. When
+                // dropping back to 1 finger, the pinch is over.
+                if (ev.pointerCount <= 2) endPinch()
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> endPinch()
+        }
+        return super.dispatchTouchEvent(ev)
+    }
+
+    private fun endPinch() {
+        if (!pinchActive) return
+        pinchActive = false
+        // Flush the scrollY we suppressed during the pinch so the outer
+        // CompactAppBar swap threshold catches up to the settled state.
+        onScrollChanged(webView.scrollY)
+    }
 
     override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
         when (ev.actionMasked) {
@@ -227,13 +337,14 @@ class ConversationContainer @JvmOverloads constructor(
     }
 
     private fun isTouchOnOverlay(x: Float, y: Float): Boolean {
-        val pinchFactor = currentPinchFactor()
+        // Overlays are laid out at (0, 0, w, h), moved via translationY, and
+        // kept at density size (scaleY = 1) regardless of pinch — see
+        // [positionOverlays].
         for (o in overlays.values) {
             if (!o.positioned || o.view.visibility != View.VISIBLE) continue
-            val topDev = o.view.translationY
-            val botDev = topDev + o.view.measuredHeight * pinchFactor
-            // Overlays are full-width; only y needs bounds testing.
-            if (y in topDev..botDev) return true
+            val top = o.view.translationY
+            val bottom = top + o.view.measuredHeight
+            if (y >= top && y <= bottom) return true
         }
         return false
     }
@@ -276,7 +387,6 @@ class ConversationContainer @JvmOverloads constructor(
             resolveSize(width, widthMeasureSpec),
             resolveSize(MeasureSpec.getSize(heightMeasureSpec), heightMeasureSpec)
         )
-        pushSpacerHeights()
         publishAppBarHeightIfChanged()
     }
 
@@ -284,44 +394,92 @@ class ConversationContainer @JvmOverloads constructor(
         val w = r - l
         val h = b - t
         webView.layout(0, 0, w, h)
+        // Overlays are laid out ONCE at (0, 0, ow, oh). Their screen y is
+        // driven by View.translationY in positionOverlays() so that scroll
+        // and pinch reposition in a single draw pass with no layout/measure
+        // invalidation — the cheapest possible per-frame movement.
         for (o in overlays.values) {
             val ow = o.view.measuredWidth
             val oh = o.view.measuredHeight
             o.view.layout(0, 0, ow, oh)
         }
         positionOverlays()
+        // Measurement may have produced a new measuredHeight → the CSS
+        // spacer needs a fresh height. Batched via the coordinator because
+        // this only fires on layout, not on scroll/pinch frames.
+        requestGeometryUpdate()
+    }
+
+    /* ── Geometry coordinator ───────────────────────────────────────────── */
+
+    /**
+     * Coalesces scroll / scale / measurement change events into a single
+     * geometry recomputation per animation frame. Every source that would
+     * otherwise call [positionOverlays] or [pushSpacerHeights] directly
+     * routes through here so a pinch + scroll + AppBar swap firing in the
+     * same frame produces one consistent layout pass instead of three
+     * competing ones with different state snapshots.
+     */
+    private fun requestGeometryUpdate() {
+        if (geometryUpdatePosted) return
+        geometryUpdatePosted = true
+        postOnAnimation {
+            geometryUpdatePosted = false
+            pushSpacerHeights()
+            positionOverlays()
+        }
     }
 
     /* ── Coordinate math ────────────────────────────────────────────────── */
 
-    private fun currentPinchFactor(): Float {
-        // webView.currentScale = density × pinch (≈3.0 on a 3x device at rest).
-        // Only the pinch part should visually resize overlays; the density
-        // part is already baked into their measuredHeight (device px).
-        val scale = webView.currentScale.takeIf { it > 0f } ?: 1f
-        val initial = webView.initialScale.takeIf { it > 0f } ?: 1f
-        return scale / initial
-    }
-
+    /**
+     * Moves every overlay so its top is anchored to the top of its HTML
+     * spacer in device px. Overlays keep their density-only measured size —
+     * they do NOT scale with pinch; only translationY moves them.
+     *
+     * Position rule (CSS-px offsets, converted at the end):
+     * ```
+     *   pinchFactor    = visualViewport.scale (from JS bridge)
+     *   effectiveScale = pinchFactor * initialScale
+     *   screenY        = (topCss - pageTopCss) * effectiveScale
+     * ```
+     * Both `topCss` and `pageTopCss` come from the same CSS-px coordinate
+     * space (the layout viewport), so subtracting them stays consistent
+     * regardless of what pinch factor the compositor is applying — no
+     * cross-source lag between "how zoomed" and "how scrolled".
+     *
+     * Before the bridge fires we fall back to the WebView's native
+     * `currentScale`/`scrollY` so the first frame after page load isn't
+     * blank. Once JS reports once, we stay on the bridge path.
+     */
     fun positionOverlays() {
-        val scale = webView.currentScale.takeIf { it > 0f } ?: 1f
-        val pinchFactor = currentPinchFactor()
-        val scrollY = webView.scrollY
+        val initial = webView.initialScale.takeIf { it > 0f } ?: 1f
+        val pinchFactor: Float
+        val pageTopCss: Float
+        if (bridgeHasValue) {
+            pinchFactor = bridgeScale
+            pageTopCss = bridgePageTopCss
+        } else {
+            val current = webView.currentScale.takeIf { it > 0f } ?: 1f
+            pinchFactor = current / initial
+            // webView.scrollY is device px; convert back to CSS px so the
+            // math below is uniform.
+            pageTopCss = if (current > 0f) webView.scrollY / current else 0f
+        }
+        val effectiveScale = pinchFactor * initial
         val viewportH = height
         for (o in overlays.values) {
-            val topDevice = (o.topCss * scale) - scrollY
-            // scaleX/Y = pinch only, pivot top-left so overlays grow down/right
-            // from their content anchor and stay flush with their DOM spacer at
-            // every zoom level — instead of the overlay keeping its unscaled
-            // device size while the spacer around it grows with the pinch.
-            o.view.pivotX = 0f
-            o.view.pivotY = 0f
-            o.view.scaleX = pinchFactor
-            o.view.scaleY = pinchFactor
-            o.view.translationY = topDevice
-            val scaledHeight = o.view.measuredHeight * pinchFactor
-            val bottomDevice = topDevice + scaledHeight
-            val onScreen = bottomDevice > 0f && topDevice < viewportH
+            val topPx = (o.topCss - pageTopCss) * effectiveScale
+            // Overlays stay at density size — no visual scaling. Reset
+            // defensively in case a previous frame left them scaled.
+            if (o.view.scaleX != 1f) o.view.scaleX = 1f
+            if (o.view.scaleY != 1f) o.view.scaleY = 1f
+            // translationY takes a float — no roundToInt() so we don't
+            // introduce ±1px jitter on each frame from subpixel scale
+            // values. The renderer snaps to device pixels at draw time.
+            if (o.view.translationY != topPx) o.view.translationY = topPx
+            val visualH = o.view.measuredHeight
+            val onScreen = topPx + visualH > 0f && topPx < viewportH
             // Suppress a newly-added overlay until JS reports its actual
             // position — otherwise it briefly renders at translationY=0
             // (on top of the app bar).
@@ -330,14 +488,30 @@ class ConversationContainer @JvmOverloads constructor(
         }
     }
 
+    /**
+     * Push each overlay's spacer CSS-px height into the HTML DOM.
+     *
+     * `cssPx = measuredHeight / initialScale` — a **constant** number of
+     * CSS px, invariant to user pinch. At any zoom, the WebView compositor
+     * scales the spacer to `measuredHeight × pinchFactor` device px, and
+     * [positionOverlays] scales the overlay by the same `pinchFactor`, so
+     * the two stay flush without any per-pinch reflow.
+     *
+     * Called from [requestGeometryUpdate] (layout / bridge-report paths).
+     * We deliberately do NOT push on scale changes — a JS reflow per
+     * pinch tick would stall the WebView compositor and produce visible
+     * flicker (bug reported 2026-08-26).
+     */
     private fun pushSpacerHeights() {
-        // Spacer device height = cssPx × webView.currentScale (density × pinch).
-        // Overlay visual device height = measuredHeight × pinchFactor.
-        // For them to match at every pinch: cssPx = measuredHeight / initialScale
-        // — a constant, so no need to re-push during pinch.
-        val initial = webView.initialScale.takeIf { it > 0f } ?: 1f
+        val initial = webView.initialScale
+        // WebView reports 1.0 before onPageFinished sets the density-scale.
+        // Skip pushing until we have a real value; onPageFinished re-fires
+        // scaleListener → coordinator → this method with the correct scale.
+        if (initial <= 0f) return
         for (o in overlays.values) {
-            val cssPx = (o.view.measuredHeight / initial).toInt()
+            val measured = o.view.measuredHeight
+            if (measured <= 0) continue
+            val cssPx = (measured / initial).roundToInt()
             if (cssPx <= 0 || cssPx == o.lastSentSpacerCssPx) continue
             o.lastSentSpacerCssPx = cssPx
             val id = o.id.replace("'", "\\'")

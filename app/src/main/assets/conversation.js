@@ -9,6 +9,7 @@
  * Bridge contract (JS -> Kotlin, injected as `Bridge`):
  *   Bridge.onReady()
  *   Bridge.onGeometry(jsonPayload)
+ *   Bridge.onViewport(scale, pageTopCss)  — realtime pinch/scroll from compositor
  *
  * Native -> JS (invoked via WebView.evaluateJavascript):
  *   renderThread(jsonPayload)
@@ -211,12 +212,35 @@
     window.setSpacerHeight = setSpacerHeight;
     window.measurePositions = measurePositions;
 
+    /* ── Realtime viewport reporter (visualViewport) ───────────────────── */
+
+    // Push actual compositor scale + scroll offset to native every time the
+    // visual viewport changes. Fires per frame during pinch, so overlays can
+    // follow the DOM without waiting for WebViewClient.onScaleChanged (which
+    // is sparse and lags the compositor by 1-2 frames). Layout-viewport
+    // scrolls also arrive here via the window 'scroll' fallback for WebView
+    // implementations that don't dispatch visualViewport 'scroll' when only
+    // the layout viewport moves.
+    var vv = window.visualViewport;
+    function reportViewport() {
+        if (!window.Bridge || typeof Bridge.onViewport !== 'function') return;
+        var scale = vv ? vv.scale : 1;
+        var pageTop = vv ? vv.pageTop : (window.scrollY || 0);
+        Bridge.onViewport(scale, pageTop);
+    }
+    if (vv) {
+        vv.addEventListener('scroll', reportViewport);
+        vv.addEventListener('resize', reportViewport);
+    }
+    window.addEventListener('scroll', reportViewport, { passive: true });
+
     /* ── Lifecycle ─────────────────────────────────────────────────────── */
 
     window.addEventListener('resize', scheduleMeasure);
 
     // Signal readiness once DOMPurify and this script have both loaded.
     window.addEventListener('load', function () {
+        reportViewport();
         if (window.Bridge && typeof Bridge.onReady === 'function') {
             Bridge.onReady();
         }

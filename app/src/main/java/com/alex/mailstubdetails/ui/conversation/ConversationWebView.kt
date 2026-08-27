@@ -62,6 +62,11 @@ class ConversationWebView @JvmOverloads constructor(
         settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
+            // Native WebView pinch — same model as Gmail (Android) /
+            // AOSP UnifiedEmail. WebView's compositor scales the rendered
+            // bitmap visually; HTML layout is NOT reflowed, so tables and
+            // wide email content survive intact. Zoom is shared across the
+            // whole conversation (single WebView = single currentScale).
             setSupportZoom(true)
             builtInZoomControls = true
             displayZoomControls = false
@@ -111,6 +116,11 @@ class ConversationWebView @JvmOverloads constructor(
                 initialScale = s
                 initialScaleSet = true
             }
+            // WebView does not fire onScaleChanged for the initial density
+            // scale — notify listeners here so the container's geometry
+            // coordinator can push spacer heights with the real scale
+            // instead of the placeholder 1.0.
+            scaleListener?.onScaleChanged(s)
             clientDelegate?.onPageFinished(view, url)
         }
 
