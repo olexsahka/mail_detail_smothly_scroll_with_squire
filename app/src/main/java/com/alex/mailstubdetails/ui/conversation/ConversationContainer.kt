@@ -14,20 +14,21 @@ import org.json.JSONObject
  * ViewGroup that hosts a single [ConversationWebView] plus N native overlay
  * Views positioned on top of it — the AOSP UnifiedEmail pattern.
  *
- * ### Invariant (Gmail-style: static overlays over a zooming body)
+ * ### Invariant (Gmail-style: static overlays, compressed chains)
  * Overlays keep their density-only Compose size at every pinch factor —
- * they do NOT visually scale with the WebView compositor. Only their
- * *top* is anchored to the top of the HTML spacer they sit on. As the
- * user zooms in, the spacer's device height grows past the overlay's
- * fixed device height, creating a visible gap between the overlay's
- * bottom and the DOM content that follows — this is the same "extra
- * space during pinch" Gmail exposes. It disappears again at zoom = 1.
+ * no visual scaling, no DOM reflow during pinch. To hide the per-spacer
+ * "overshoot" (spacer_device = M*P grows past the fixed overlay height
+ * M when zoomed in), [positionOverlays] walks overlays in DOM order and
+ * "compresses" each contiguous chain: within a chain of adjacent
+ * spacers (no body content between), each overlay is placed right after
+ * the previous overlay's bottom, so they stay flush regardless of zoom.
+ * The accumulated overshoot spills out below the chain (either into an
+ * empty area before the next body, or scrollable empty space at the
+ * end of the thread — visible only if the user scrolls there).
  *
- * Spacer CSS heights are pushed as `measuredHeight / initialScale` — a
- * *constant* number of CSS px, invariant to user pinch. Pushing a new
- * spacer height per pinch tick would force a JS reflow every frame,
- * mid-pinch, producing visible flicker in the WebView and jumpy overlay
- * positions.
+ * We deliberately do NOT mutate spacer CSS heights during pinch. Trying
+ * that raced the WebView compositor's raster pipeline and produced
+ * visible content flicker (bug reported 2026-08-27).
  *
  * ### Realtime viewport (JS `visualViewport` → `Bridge.onViewport`)
  * `WebViewClient.onScaleChanged` is sparse and lags the compositor by 1-2
@@ -134,7 +135,22 @@ class ConversationContainer @JvmOverloads constructor(
     /** Latest `visualViewport.scale` reported from JS, or 1 if none yet. */
     private var bridgeScale: Float = 1f
 
-    /** Latest `visualViewport.pageTop` (CSS px) reported from JS. */
+    /**
+     * Current best estimate of `visualViewport.pageTop` in CSS px.
+     *
+     * Two sources feed this field:
+     *  1. JS `onViewport(scale, pageTopCss)` — **atomic** snapshot of the
+     *     compositor state. This is the only correct value during pinch,
+     *     when `bridgeScale` is also changing per frame.
+     *  2. Native `scrollListener` — predicts `pageTopCss = scrollY /
+     *     effectiveScale` from the freshly-updated native `scrollY`.
+     *     Used when **not** pinching so the value doesn't lag by 1 frame
+     *     while the compositor scrolls between JS reports.
+     *
+     * Both writers hit the main thread, so last-write-wins per frame.
+     * We guard prediction behind `!pinchActive` so we never overwrite the
+     * atomic JS snapshot with a stale-scale prediction mid-pinch.
+     */
     private var bridgePageTopCss: Float = 0f
 
     /** True after the JS reporter has fired at least once. */
@@ -157,6 +173,26 @@ class ConversationContainer @JvmOverloads constructor(
             LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
         )
         webView.scrollListener = ConversationWebView.ScrollListener { newY, _ ->
+            // Predict bridgePageTopCss from the fresh native scrollY when
+            // NOT pinching. Two purposes:
+            //   • Between JS visualViewport events the compositor keeps
+            //     scrolling, and bridgePageTopCss from the last JS report
+            //     would lag by up to 1 frame → visible ~1-3 px overlay
+            //     wobble against DOM content. Prediction closes that gap.
+            //   • Uses the last known bridgeScale, so the single bridge
+            //     formula `(topCss - bridgePageTopCss) * effectiveScale`
+            //     stays valid at any zoom level, not just 1×.
+            // Skip during pinch — JS fires per-frame with an atomic
+            // (scale, pageTopCss) snapshot, and a native prediction using
+            // the previous-frame scale would break atomicity and re-
+            // introduce drift.
+            if (!pinchActive && bridgeHasValue) {
+                val initial = webView.initialScale.takeIf { it > 0f } ?: 1f
+                val effectiveScale = bridgeScale * initial
+                if (effectiveScale > 0f) {
+                    bridgePageTopCss = newY / effectiveScale
+                }
+            }
             // Reposition SYNCHRONOUSLY in the same frame the WebView reports
             // its new scrollY. Routing through postOnAnimation would defer by
             // one frame and produce a visible lag between the HTML content
@@ -294,9 +330,24 @@ class ConversationContainer @JvmOverloads constructor(
     private fun endPinch() {
         if (!pinchActive) return
         pinchActive = false
+        // Rewrite bridgePageTopCss to what the fresh native scrollY
+        // implies at the current bridgeScale — same math as the
+        // scrollListener's non-pinch prediction. This aligns the bridge
+        // value (which was last set by the JS atomic snapshot on the
+        // last pinch frame) with what the compositor has actually
+        // settled on, so the overlay position stays continuous across
+        // the pinch → scroll boundary without any decay/blend.
+        if (bridgeHasValue) {
+            val initial = webView.initialScale.takeIf { it > 0f } ?: 1f
+            val effectiveScale = bridgeScale * initial
+            if (effectiveScale > 0f) {
+                bridgePageTopCss = webView.scrollY.toFloat() / effectiveScale
+            }
+        }
         // Flush the scrollY we suppressed during the pinch so the outer
         // CompactAppBar swap threshold catches up to the settled state.
         onScrollChanged(webView.scrollY)
+        positionOverlays()
     }
 
     override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
@@ -433,43 +484,75 @@ class ConversationContainer @JvmOverloads constructor(
     /* ── Coordinate math ────────────────────────────────────────────────── */
 
     /**
-     * Moves every overlay so its top is anchored to the top of its HTML
-     * spacer in device px. Overlays keep their density-only measured size —
-     * they do NOT scale with pinch; only translationY moves them.
+     * Places every overlay at its target device-px position, with per-chain
+     * compression so contiguous spacers stay flush at any zoom.
      *
-     * Position rule (CSS-px offsets, converted at the end):
+     * Two positioning modes, decided per overlay by walking in DOM order:
      * ```
-     *   pinchFactor    = visualViewport.scale (from JS bridge)
-     *   effectiveScale = pinchFactor * initialScale
-     *   screenY        = (topCss - pageTopCss) * effectiveScale
+     *   naturalTopPx    = (topCss - pageTopCss) * effectiveScale
+     *   compressedTopPx = prev.translationY + prev.measuredHeight
      * ```
-     * Both `topCss` and `pageTopCss` come from the same CSS-px coordinate
-     * space (the layout viewport), so subtracting them stays consistent
-     * regardless of what pinch factor the compositor is applying — no
-     * cross-source lag between "how zoomed" and "how scrolled".
+     * An overlay is *contiguous* with the previous one when its spacer's
+     * top CSS matches the previous spacer's bottom (i.e., there's no body
+     * content in DOM between them). Contiguous → compressed (chain), else
+     * → natural. The accumulated overshoot inside a chain (each spacer
+     * grew by `M*(P-1)` in device px) piles up below the chain's last
+     * overlay: either into empty space before the next body, or as
+     * trailing scrollable emptiness at the end of the thread.
      *
-     * Before the bridge fires we fall back to the WebView's native
-     * `currentScale`/`scrollY` so the first frame after page load isn't
-     * blank. Once JS reports once, we stay on the bridge path.
+     * Body content stays at its natural DOM position (zoomed by the
+     * compositor). Because we place chain overlays *above* their natural
+     * DOM position, they cover the top portion of the DOM spacer chain —
+     * the excess DOM spacer area falls below the chain and shows as an
+     * empty region.
+     *
+     * Before the JS bridge fires once we fall back to WebView's own
+     * `currentScale` / `scrollY` so the first paint isn't blank.
+     *
+     * A single formula covers all cases:
+     * ```
+     *   scrollOffsetPx = bridgePageTopCss * effectiveScale
+     *   naturalTopPx   = topCss * effectiveScale - scrollOffsetPx
+     * ```
+     * `bridgePageTopCss` is kept in sync by two writers (see its field
+     * KDoc): JS atomic snapshots during pinch, native scroll-based
+     * prediction otherwise. That removes the source-switching that
+     * previously caused a small overlay snap at the pinch → scroll
+     * boundary.
      */
     fun positionOverlays() {
         val initial = webView.initialScale.takeIf { it > 0f } ?: 1f
-        val pinchFactor: Float
-        val pageTopCss: Float
-        if (bridgeHasValue) {
-            pinchFactor = bridgeScale
-            pageTopCss = bridgePageTopCss
+        val pinchFactor: Float = if (bridgeHasValue) {
+            bridgeScale
         } else {
             val current = webView.currentScale.takeIf { it > 0f } ?: 1f
-            pinchFactor = current / initial
-            // webView.scrollY is device px; convert back to CSS px so the
-            // math below is uniform.
-            pageTopCss = if (current > 0f) webView.scrollY / current else 0f
+            current / initial
         }
         val effectiveScale = pinchFactor * initial
+        val scrollOffsetPx = bridgePageTopCss * effectiveScale
         val viewportH = height
+        // Sub-CSS-px tolerance when deciding whether two spacers are
+        // adjacent in DOM. JS reports floats from getBoundingClientRect
+        // and 0.5px rounding drift is normal.
+        val contiguityEpsilon = 0.5f
+        var prev: Overlay? = null
+        var prevTopPx = 0f
         for (o in overlays.values) {
-            val topPx = (o.topCss - pageTopCss) * effectiveScale
+            val naturalTopPx = o.topCss * effectiveScale - scrollOffsetPx
+            val topPx: Float = if (prev != null && prev.positioned && o.positioned) {
+                val gapCss = o.topCss - (prev.topCss + prev.heightCss)
+                if (gapCss <= contiguityEpsilon) {
+                    // Contiguous chain: stack directly under previous overlay,
+                    // absorbing this spacer's pinch overshoot into the chain.
+                    prevTopPx + prev.view.measuredHeight
+                } else {
+                    // Body content separates the chains — fall back to natural
+                    // DOM position so we don't cover the zoomed body.
+                    naturalTopPx
+                }
+            } else {
+                naturalTopPx
+            }
             // Overlays stay at density size — no visual scaling. Reset
             // defensively in case a previous frame left them scaled.
             if (o.view.scaleX != 1f) o.view.scaleX = 1f
@@ -485,6 +568,8 @@ class ConversationContainer @JvmOverloads constructor(
             // (on top of the app bar).
             val desired = if (o.positioned && onScreen) View.VISIBLE else View.INVISIBLE
             if (o.view.visibility != desired) o.view.visibility = desired
+            prev = o
+            prevTopPx = topPx
         }
     }
 

@@ -155,6 +155,11 @@
     /* ── Spacer height sync (native -> HTML) ───────────────────────────── */
 
     // Called by native once an overlay has been measured on the Compose side.
+    // We do NOT rewrite this on pinch — mutating the DOM every viewport tick
+    // races the WebView compositor's raster pipeline and produces visible
+    // content flicker. Instead, native takes care of visually collapsing
+    // the per-spacer pinch overshoot via a chain-walk in positionOverlays()
+    // — see ConversationContainer.kt.
     function setSpacerHeight(overlayId, cssPx) {
         var el = document.querySelector('[data-overlay="' + overlayId + '"]');
         if (!el) return;
