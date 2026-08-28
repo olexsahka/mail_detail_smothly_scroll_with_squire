@@ -20,7 +20,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlin.random.Random
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
@@ -29,6 +33,13 @@ import androidx.compose.ui.unit.dp
 import com.alex.mailstubdetails.model.EmailThread
 import com.alex.mailstubdetails.ui.conversation.ConversationOverlaySlot
 import com.alex.mailstubdetails.ui.conversation.ConversationView
+
+// Fake body-fetch pacing. The jitter keeps repeated taps from feeling
+// mechanical (every load takes the same time = uncanny), and lets the
+// UI showcase the shimmer for a realistic-looking beat before content
+// snaps in.
+private const val FAKE_LOAD_DELAY_MS_MIN = 550L
+private const val FAKE_LOAD_DELAY_MS_JITTER = 350L
 
 /**
  * The AOSP-style conversation screen — replaces both the old
@@ -54,6 +65,18 @@ fun ConversationScreen(
     var expandedIds by remember(thread.id) {
         mutableStateOf(setOf(thread.messages.first().id))
     }
+    // Body content of the first message is treated as prefetched (matches
+    // Gmail/Outlook: opening a thread shows the newest message immediately).
+    // All others go through the fake-load path on tap.
+    var loadedIds by remember(thread.id) {
+        mutableStateOf(setOf(thread.messages.first().id))
+    }
+    // In-flight fake-load requests. Guards against spamming taps: if a
+    // load is already scheduled for a message, further collapse+expand
+    // toggles reuse the same coroutine's result.
+    val pendingLoads = remember(thread.id) { mutableSetOf<String>() }
+    val loadScope = rememberCoroutineScope()
+
     var scrollY by remember { mutableIntStateOf(0) }
     var appBarHeightPx by remember { mutableIntStateOf(0) }
 
@@ -75,6 +98,7 @@ fun ConversationScreen(
             ConversationView(
                 thread = thread,
                 expandedIds = expandedIds,
+                loadedIds = loadedIds,
                 modifier = Modifier.fillMaxSize(),
                 onScrollChanged = { scrollY = it },
                 onAppBarHeightChanged = { appBarHeightPx = it },
@@ -88,10 +112,28 @@ fun ConversationScreen(
                         onReplyAll = { onReply() },
                         onForward = { onReply() },
                         onToggleMessage = { msgId ->
-                            expandedIds = if (msgId in expandedIds) {
-                                expandedIds - msgId
+                            if (msgId in expandedIds) {
+                                // Collapse — loadedIds is deliberately NOT
+                                // cleared so re-expanding is instant. Same
+                                // as Gmail's "already fetched" behavior.
+                                expandedIds = expandedIds - msgId
                             } else {
-                                expandedIds + msgId
+                                expandedIds = expandedIds + msgId
+                                // Kick off a fake "network fetch" only if
+                                // we haven't cached this body yet AND no
+                                // load is already in-flight for it.
+                                if (msgId !in loadedIds &&
+                                    pendingLoads.add(msgId)
+                                ) {
+                                    loadScope.launch {
+                                        delay(FAKE_LOAD_DELAY_MS_MIN +
+                                            Random.nextLong(
+                                                FAKE_LOAD_DELAY_MS_JITTER
+                                            ))
+                                        loadedIds = loadedIds + msgId
+                                        pendingLoads.remove(msgId)
+                                    }
+                                }
                             }
                         }
                     )

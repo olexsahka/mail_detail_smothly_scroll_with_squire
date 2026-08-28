@@ -40,6 +40,7 @@ fun ConversationOverlaySlot(
                 onToggle = { onToggleMessage(msg.id) }
             )
         }
+        OverlayKind.MESSAGE_BODY_LOADER -> MessageBodyLoaderOverlay()
         OverlayKind.MESSAGE_FOOTER -> {
             val msg = thread.messages.firstOrNull { it.id == descriptor.msgId } ?: return
             MessageFooterOverlay(

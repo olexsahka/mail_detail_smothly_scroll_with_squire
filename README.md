@@ -431,14 +431,18 @@ Compose-state expandedIds меняется → recomposition → syncWebView:
 6. **WebView settings**: обязательно `javaScriptEnabled=true`, `domStorageEnabled=true`, `setSupportZoom(true)`, `builtInZoomControls=true`, `displayZoomControls=false`, `useWideViewPort=false`, `loadWithOverviewMode=false`. Именно эта комбинация даёт «Gmail-style» компоузиторный зум.
 7. **Разрешения**: `INTERNET` только если контент подтягивает ресурсы извне. В идеале бандлить санитайзер локально.
 
-### 12.4 Не забыть исправить (проблемы, унаследованные от этого проекта)
+### 12.4 Что уже сделано в этом коде, на что смотреть при переиспользовании
 
-Если берёте код как основу для продакшена:
-- **WebView-утечки**: `AndroidView` не вызывает `WebView.destroy()` при dispose. Добавить `onRelease { it.destroy() }`.
-- **`shouldOverrideUrlLoading`**: в `ConversationWebView` не установлен делегат — ссылки открываются внутри WebView. Для реального приложения нужен fallback в системный браузер.
-- **`allowUniversalAccessFromFileURLs = true`** в `SquireWebView.kt` — уязвимость. Для read-only рендера HTML не нужно.
-- **CDN Squire.js без SRI** — при отравлении CDN получает RCE-канал в приложение. Бандлить локально + integrity hash.
-- **Dark mode**: HTML-стили захардкожены как светлые. Для react to system theme — `@media (prefers-color-scheme: dark)` в CSS + синхронизация через Bridge.
+- **WebView-утечки закрыты** — `SquireWebViewContainer` и `ConversationView` в своих `AndroidView` передают `onRelease`, который снимает `Bridge` через `removeJavascriptInterface`, детачит вьюху и вызывает `WebView.destroy()`. При копировании паттерна не забудьте перенести `onRelease` целиком — без него утечка активити гарантирована.
+- **Внешние ссылки открываются системным браузером** — `ConversationWebView.shouldOverrideUrlLoading` роутит `http/https/mailto/tel/sms/geo` через `Intent.ACTION_VIEW`. Если в вашем продукте нужен in-app browser — прокиньте свой делегат через `clientDelegate` и верните `true` там, где хотите перехватить (см. код).
+- **`allowUniversalAccessFromFileURLs` не включается** — в `SquireWebView` эта строка удалена. Squire бандлится локально в `assets/squire.js` (см. ниже), кросс-оригин-XHR не нужен. Не включайте её обратно без веских причин: в паре с любым `@JavascriptInterface` это RCE-канал при компрометации любого подключаемого скрипта.
+- **Squire.js бандлится локально** в `assets/squire.js` (минифицированная сборка `squire-rte@2.3.0`). Никакой CDN-зависимости, работает офлайн, нет supply-chain риска. При обновлении версии — просто перекачайте файл.
+
+Что осталось нерешённым (при переиспользовании — учитывать самим):
+- **Dark mode**: HTML-стили в `conversation_template.html` и `squire_editor.html` захардкожены светлыми. Для реакции на системную тему — `@media (prefers-color-scheme: dark)` в CSS + синхронизация через Bridge (передать `isDark` из Kotlin в JS одним вызовом).
+- **Deprecated `escape/unescape`** в `squire_editor.html` (функция `setHtmlBase64`) — заменить на `TextDecoder`.
+- **Тесты** в неправильном пакете (`com.example.myapplication` вместо `com.alex.mailstubdetails`).
+- **Release-сборка** без signing config / R8 / proguard-rules для анонимных `@JavascriptInterface`.
 
 ---
 

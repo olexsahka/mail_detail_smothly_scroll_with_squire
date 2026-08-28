@@ -123,9 +123,15 @@ fun SquireWebViewContainer(
                 setSupportZoom(true)
                 builtInZoomControls = true
                 displayZoomControls = false
+                // allowFileAccess is needed to load our bundled assets via
+                // file:///android_asset/. We do NOT enable
+                // allowUniversalAccessFromFileURLs / allowFileAccessFromFileURLs —
+                // that would let any script running in the file:// origin
+                // XHR-fetch arbitrary local files, which combined with the
+                // JavascriptInterface below would be a full RCE canal on
+                // CDN compromise. Squire loads bundled locally, no cross-
+                // origin XHR is required.
                 allowFileAccess = true
-                @Suppress("DEPRECATION")
-                allowUniversalAccessFromFileURLs = true
                 loadWithOverviewMode = true
                 useWideViewPort = true
             }
@@ -193,6 +199,19 @@ fun SquireWebViewContainer(
                 )
                 webView.evaluateJavascript("setHtmlBase64('$b64')", null)
             }
+        },
+        onRelease = { webView ->
+            // Compose disposal doesn't tear down AndroidView children on its
+            // own — WebView keeps a reference to the JavascriptInterface
+            // "Bridge" (which closes over Compose state) and to its native
+            // renderer, leaking the Activity. Remove the interface and call
+            // destroy() explicitly.
+            webView.removeJavascriptInterface("Bridge")
+            webView.stopLoading()
+            webView.webChromeClient = null
+            webView.setOnTouchListener(null)
+            (webView.parent as? android.view.ViewGroup)?.removeView(webView)
+            webView.destroy()
         }
     )
 }

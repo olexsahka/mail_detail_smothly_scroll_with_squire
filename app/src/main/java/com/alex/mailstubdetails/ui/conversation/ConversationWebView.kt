@@ -1,7 +1,10 @@
 package com.alex.mailstubdetails.ui.conversation
 
 import android.annotation.SuppressLint
+import android.content.ActivityNotFoundException
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.util.AttributeSet
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -127,8 +130,37 @@ class ConversationWebView @JvmOverloads constructor(
         override fun shouldOverrideUrlLoading(
             view: WebView,
             request: WebResourceRequest
-        ): Boolean =
-            clientDelegate?.shouldOverrideUrlLoading(view, request) ?: false
+        ): Boolean {
+            // Delegate first — a caller may want custom routing (e.g., open
+            // an in-app browser Compose screen for internal links).
+            clientDelegate?.shouldOverrideUrlLoading(view, request)?.let {
+                if (it) return true
+            }
+            // Route external schemes to the system handler. Without this,
+            // taps on http/https/mailto/tel links from email HTML load
+            // inside the conversation WebView, which both breaks navigation
+            // and is a phishing surface (the URL bar isn't visible).
+            val uri: Uri = request.url ?: return false
+            return when (uri.scheme?.lowercase()) {
+                "http", "https", "mailto", "tel", "sms", "geo" -> {
+                    launchExternal(view.context, uri)
+                    true
+                }
+                // file:// / about: / data: — internal / template loads.
+                else -> false
+            }
+        }
+
+        private fun launchExternal(context: Context, uri: Uri) {
+            val intent = Intent(Intent.ACTION_VIEW, uri).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            try {
+                context.startActivity(intent)
+            } catch (_: ActivityNotFoundException) {
+                // No app can handle this URL — silently drop rather than crash.
+            }
+        }
 
         override fun shouldInterceptRequest(
             view: WebView,

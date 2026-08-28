@@ -68,6 +68,13 @@
         .msg-body h1, .msg-body h2, .msg-body h3 { line-height: 1.3; }
         .msg-body hr { border: none; border-top: 1px solid #e8eaed; margin: 16px 0; }
 
+        /* ── Message-body loader spacer ──
+           Reserves DOM space for the native shimmer overlay while the
+           message body is "loading". Height is pushed by native via
+           setSpacerHeight; the default (200px) is just a first-paint
+           reasonable size before the real overlay height arrives. */
+        .msg-body-spacer { height: 200px; }
+
         /* ── Remote-image placeholder ── */
         img[data-blocked] {
             display: inline-block;

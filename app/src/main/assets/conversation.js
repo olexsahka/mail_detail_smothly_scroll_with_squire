@@ -89,6 +89,37 @@
         }
     }
 
+    // ── Body builders ──────────────────────────────────────────────────
+    //
+    // A message body has two DOM shapes, chosen by `msg.loaded`:
+    //   loaded=false → an empty spacer div with `data-overlay="body:id"`
+    //                  so a native shimmer Compose overlay is positioned
+    //                  above it (like message headers/footers).
+    //   loaded=true  → sanitized HTML content (no overlay).
+    //
+    // On load completion, setMessageLoaded() replaces the spacer with
+    // the real content in place.
+
+    function buildLoaderSpacer(msgId) {
+        var el = document.createElement('div');
+        el.className = 'msg-body-spacer';
+        el.dataset.overlay = 'body:' + msgId;
+        el.dataset.msgId = msgId;
+        return el;
+    }
+
+    function buildLoadedBody(msg) {
+        var body = document.createElement('div');
+        body.className = 'msg-body';
+        body.dataset.msgId = msg.id;
+        body.appendChild(sanitize(msg.html || ''));
+        return body;
+    }
+
+    function buildBody(msg) {
+        return msg.loaded ? buildLoadedBody(msg) : buildLoaderSpacer(msg.id);
+    }
+
     function appendMessage(root, msg) {
         var header = document.createElement('div');
         header.className = 'msg-header-spacer';
@@ -98,11 +129,7 @@
         root.appendChild(header);
 
         if (msg.expanded) {
-            var body = document.createElement('div');
-            body.className = 'msg-body';
-            body.dataset.msgId = msg.id;
-            body.appendChild(sanitize(msg.html || ''));
-            root.appendChild(body);
+            root.appendChild(buildBody(msg));
 
             var footer = document.createElement('div');
             footer.className = 'msg-footer-spacer';
@@ -124,11 +151,9 @@
         header.dataset.expanded = String(msg.expanded);
 
         if (msg.expanded) {
-            // Insert body + footer immediately after the header spacer.
-            var body = document.createElement('div');
-            body.className = 'msg-body';
-            body.dataset.msgId = msgId;
-            body.appendChild(sanitize(msg.html || ''));
+            // Insert body (skeleton if not loaded yet) + footer immediately
+            // after the header spacer.
+            var body = buildBody(msg);
 
             var footer = document.createElement('div');
             footer.className = 'msg-footer-spacer';
@@ -149,6 +174,40 @@
             if (body) body.parentNode.removeChild(body);
             if (footer) footer.parentNode.removeChild(footer);
         }
+        scheduleMeasure();
+    }
+
+    /**
+     * Native-triggered: fake "network fetch" for a message body has
+     * completed. Swap the shimmer skeleton (if currently visible) for
+     * the real sanitized HTML in-place. If the message was collapsed
+     * before load finished, we only update the cache — the next
+     * toggleExpanded() will render straight to loaded content with no
+     * skeleton flash.
+     *
+     * htmlBase64 is UTF-8 base64 to avoid all JS string escaping edge
+     * cases (single quotes, backslashes, "</script>" in email bodies).
+     */
+    function setMessageLoaded(msgId, htmlBase64) {
+        var msg = messagesById[msgId];
+        if (!msg) return;
+        try {
+            msg.html = decodeURIComponent(escape(atob(htmlBase64)));
+        } catch (e) {
+            msg.html = '';
+        }
+        msg.loaded = true;
+
+        // Locate the loader spacer for this message (if the message is
+        // still expanded — otherwise nothing to swap, cache alone is
+        // enough for the next expand).
+        var spacer = document.querySelector(
+            '[data-overlay="body:' + msgId + '"]'
+        );
+        if (!spacer) return;
+
+        var body = buildLoadedBody(msg);
+        spacer.parentNode.replaceChild(body, spacer);
         scheduleMeasure();
     }
 
@@ -215,6 +274,7 @@
     window.renderThread = renderThread;
     window.toggleExpanded = toggleExpanded;
     window.setSpacerHeight = setSpacerHeight;
+    window.setMessageLoaded = setMessageLoaded;
     window.measurePositions = measurePositions;
 
     /* ── Realtime viewport reporter (visualViewport) ───────────────────── */

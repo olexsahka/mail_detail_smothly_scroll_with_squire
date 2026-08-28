@@ -28,13 +28,23 @@ object ConversationTemplateBuilder {
     const val TEMPLATE_PATH: String = "conversation_template.html"
     const val TEMPLATE_URL: String = BASE_URL + TEMPLATE_PATH
 
-    fun buildPayload(thread: EmailThread, expandedIds: Set<String>): String {
+    fun buildPayload(
+        thread: EmailThread,
+        expandedIds: Set<String>,
+        loadedIds: Set<String>
+    ): String {
         val messages = JSONArray()
         thread.messages.forEach { msg ->
+            val isLoaded = msg.id in loadedIds
             val obj = JSONObject().apply {
                 put("id", msg.id)
-                put("html", msg.htmlBody)
                 put("expanded", msg.id in expandedIds)
+                put("loaded", isLoaded)
+                // Only send HTML for already-loaded messages. Skeleton
+                // rendering doesn't need the real content, and this makes
+                // "not loaded yet" impossible to accidentally leak into
+                // the DOM on the JS side.
+                if (isLoaded) put("html", msg.htmlBody)
             }
             messages.put(obj)
         }

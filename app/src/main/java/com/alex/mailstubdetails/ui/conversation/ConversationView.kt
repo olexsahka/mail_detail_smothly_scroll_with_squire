@@ -25,7 +25,12 @@ import com.alex.mailstubdetails.model.EmailThread
 
 /* ── Public API surface for overlays (consumed by Phase C) ─────────────── */
 
-enum class OverlayKind { APP_BAR, MESSAGE_HEADER, MESSAGE_FOOTER }
+enum class OverlayKind {
+    APP_BAR,
+    MESSAGE_HEADER,
+    MESSAGE_BODY_LOADER,
+    MESSAGE_FOOTER
+}
 
 /**
  * Describes one native overlay that lives above the ConversationWebView.
@@ -51,12 +56,15 @@ data class OverlayDescriptor(
 fun ConversationView(
     thread: EmailThread,
     expandedIds: Set<String>,
+    loadedIds: Set<String>,
     modifier: Modifier = Modifier,
     onScrollChanged: (scrollY: Int) -> Unit = {},
     onAppBarHeightChanged: (heightPx: Int) -> Unit = {},
     overlayContent: @Composable (OverlayDescriptor) -> Unit = { DefaultOverlayPlaceholder(it) }
 ) {
-    val descriptors = remember(thread, expandedIds) { buildDescriptors(thread, expandedIds) }
+    val descriptors = remember(thread, expandedIds, loadedIds) {
+        buildDescriptors(thread, expandedIds, loadedIds)
+    }
     val latestOverlayContent = rememberUpdatedState(overlayContent)
     val latestOnScrollChanged = rememberUpdatedState(onScrollChanged)
     val latestOnAppBarHeightChanged = rememberUpdatedState(onAppBarHeightChanged)
@@ -130,7 +138,24 @@ fun ConversationView(
             // ── JS sync: full render on thread change, deltas on expand ──
             bridgeState.pendingThread = thread
             bridgeState.pendingExpandedIds = expandedIds
+            bridgeState.pendingLoadedIds = loadedIds
             syncWebView(container, bridgeState)
+        },
+        onRelease = { container ->
+            // Tear down the WebView explicitly. AndroidView disposal only
+            // detaches the child View — it does NOT call WebView.destroy().
+            // Without this the WebView keeps its render process alive and
+            // the "Bridge" JavascriptInterface holds strong references to
+            // Compose state (BridgeState / caches), leaking the Activity
+            // on every navigation.
+            val webView = container.webView
+            webView.stopLoading()
+            webView.removeJavascriptInterface("Bridge")
+            webView.webChromeClient = null
+            webView.scrollListener = null
+            webView.scaleListener = null
+            container.removeView(webView)
+            webView.destroy()
         }
     )
 }
@@ -141,18 +166,21 @@ private class BridgeState {
     val ready = mutableStateOf(false)
     var pendingThread: EmailThread? = null
     var pendingExpandedIds: Set<String> = emptySet()
+    var pendingLoadedIds: Set<String> = emptySet()
     var lastSentThreadId: String? = null
     var lastSentExpandedIds: Set<String> = emptySet()
+    var lastSentLoadedIds: Set<String> = emptySet()
 }
 
 private fun syncWebView(container: ConversationContainer, state: BridgeState) {
     if (!state.ready.value) return
     val thread = state.pendingThread ?: return
     val expanded = state.pendingExpandedIds
+    val loaded = state.pendingLoadedIds
 
     if (state.lastSentThreadId != thread.id) {
         // Full render — new (or first) thread.
-        val payload = ConversationTemplateBuilder.buildPayload(thread, expanded)
+        val payload = ConversationTemplateBuilder.buildPayload(thread, expanded, loaded)
         val b64 = Base64.encodeToString(payload.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
         // renderThread rebuilds the DOM from scratch — any previous
         // setSpacerHeight writes are lost, so drop the "already sent" cache.
@@ -164,6 +192,7 @@ private fun syncWebView(container: ConversationContainer, state: BridgeState) {
         )
         state.lastSentThreadId = thread.id
         state.lastSentExpandedIds = expanded
+        state.lastSentLoadedIds = loaded
         return
     }
 
@@ -177,13 +206,36 @@ private fun syncWebView(container: ConversationContainer, state: BridgeState) {
         }
         state.lastSentExpandedIds = expanded
     }
+
+    if (state.lastSentLoadedIds != loaded) {
+        // Delta path — for each message that has just "finished loading",
+        // hand its HTML to JS which swaps the loader spacer for real
+        // content in place. Removals (msg reverted to "not loaded") are
+        // not currently possible from the caller side — once a message
+        // is in loadedIds, it stays there.
+        val newlyLoaded = loaded - state.lastSentLoadedIds
+        for (msgId in newlyLoaded) {
+            val msg = thread.messages.firstOrNull { it.id == msgId } ?: continue
+            val htmlB64 = Base64.encodeToString(
+                msg.htmlBody.toByteArray(Charsets.UTF_8),
+                Base64.NO_WRAP
+            )
+            val safeId = msgId.replace("'", "\\'")
+            container.webView.evaluateJavascript(
+                "setMessageLoaded('$safeId', '$htmlB64')",
+                null
+            )
+        }
+        state.lastSentLoadedIds = loaded
+    }
 }
 
 private fun buildDescriptors(
     thread: EmailThread,
-    expandedIds: Set<String>
+    expandedIds: Set<String>,
+    loadedIds: Set<String>
 ): List<OverlayDescriptor> {
-    val list = ArrayList<OverlayDescriptor>(1 + thread.messages.size * 2)
+    val list = ArrayList<OverlayDescriptor>(1 + thread.messages.size * 3)
     list += OverlayDescriptor(
         id = "app-bar",
         kind = OverlayKind.APP_BAR,
@@ -192,12 +244,25 @@ private fun buildDescriptors(
     )
     thread.messages.forEach { msg ->
         val expanded = msg.id in expandedIds
+        val loaded = msg.id in loadedIds
         list += OverlayDescriptor(
             id = "header:${msg.id}",
             kind = OverlayKind.MESSAGE_HEADER,
             msgId = msg.id,
             expanded = expanded
         )
+        if (expanded && !loaded) {
+            // Native shimmer covers the DOM's `.msg-body-spacer` until
+            // setMessageLoaded swaps in the real content. Once loaded,
+            // this descriptor drops out of the list and the overlay is
+            // removed by setOverlays.
+            list += OverlayDescriptor(
+                id = "body:${msg.id}",
+                kind = OverlayKind.MESSAGE_BODY_LOADER,
+                msgId = msg.id,
+                expanded = true
+            )
+        }
         if (expanded) {
             list += OverlayDescriptor(
                 id = "footer:${msg.id}",
@@ -219,6 +284,8 @@ private fun DefaultOverlayPlaceholder(descriptor: OverlayDescriptor) {
             Triple("APP BAR", Color(0x1F1A73E8), 128.dp)
         OverlayKind.MESSAGE_HEADER ->
             Triple("HEADER · ${descriptor.msgId}", Color(0x1F34A853), 64.dp)
+        OverlayKind.MESSAGE_BODY_LOADER ->
+            Triple("LOADING · ${descriptor.msgId}", Color(0x1F9E9E9E), 220.dp)
         OverlayKind.MESSAGE_FOOTER ->
             Triple("FOOTER · ${descriptor.msgId}", Color(0x1FFBBC04), 48.dp)
     }

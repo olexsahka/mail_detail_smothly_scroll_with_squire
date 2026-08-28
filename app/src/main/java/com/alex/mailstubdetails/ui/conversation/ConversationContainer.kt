@@ -218,30 +218,59 @@ class ConversationContainer @JvmOverloads constructor(
     /* ── Public API ─────────────────────────────────────────────────────── */
 
     /**
-     * Replace the current set of overlays. Order is preserved (LinkedHashMap).
-     * A subsequent [requestLayout] will measure overlays and push spacer
-     * heights to the WebView.
+     * Replace the current set of overlays with [items]. The resulting
+     * iteration order of the internal [overlays] LinkedHashMap **exactly**
+     * matches [items] — that order must mirror the DOM order of the
+     * `[data-overlay]` spacers, because [positionOverlays] walks the map
+     * once per frame and uses `prev` for chain-compression contiguity
+     * checks (`gap = curr.topCss - (prev.topCss + prev.heightCss)`). If
+     * the walk order didn't match DOM order, `prev` would be a wrong
+     * neighbor, and a negative `gap` (curr is above prev in DOM) would
+     * trip the `gap <= 0.5` check and pull the current overlay to sit
+     * flush under a much lower element — visible symptom: overlays that
+     * "disappear" past the bottom of the viewport after a mid-thread
+     * expand.
+     *
+     * Preserves per-overlay state (`topCss`, `heightCss`, `positioned`,
+     * `lastSentSpacerCssPx`) when the same `(id, view)` pair reappears.
      */
     fun setOverlays(items: List<Pair<String, View>>) {
-        var changed = false
-        val newIds = items.mapTo(mutableSetOf()) { it.first }
-        val toRemove = overlays.keys - newIds
+        val currentIds = overlays.keys.toList()
+        val newIds = items.map { it.first }
+        val sameOrder = currentIds == newIds
+        val sameViews = sameOrder &&
+            items.all { (id, view) -> overlays[id]?.view === view }
+        if (sameViews) return
+
+        val newIdSet = newIds.toHashSet()
+        val toRemove = overlays.keys.filter { it !in newIdSet }
         for (id in toRemove) {
-            val o = overlays.remove(id) ?: continue
-            removeView(o.view)
-            changed = true
+            overlays.remove(id)?.let { removeView(it.view) }
         }
+
+        // Rebuild in items order. Existing Overlay objects are reused
+        // (state preserved). New/replaced views trigger addView.
+        val rebuilt = LinkedHashMap<String, Overlay>(items.size)
         for ((id, view) in items) {
-            if (overlays[id]?.view === view) continue
-            overlays[id]?.let { removeView(it.view) }
-            overlays[id] = Overlay(id = id, view = view)
-            addView(
-                view,
-                LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
-            )
-            changed = true
+            val existing = overlays[id]
+            val overlay = if (existing != null && existing.view === view) {
+                existing
+            } else {
+                existing?.let { removeView(it.view) }
+                addView(
+                    view,
+                    LayoutParams(
+                        LayoutParams.MATCH_PARENT,
+                        LayoutParams.WRAP_CONTENT
+                    )
+                )
+                Overlay(id = id, view = view)
+            }
+            rebuilt[id] = overlay
         }
-        if (changed) requestLayout()
+        overlays.clear()
+        overlays.putAll(rebuilt)
+        requestLayout()
     }
 
     /**
@@ -541,7 +570,15 @@ class ConversationContainer @JvmOverloads constructor(
             val naturalTopPx = o.topCss * effectiveScale - scrollOffsetPx
             val topPx: Float = if (prev != null && prev.positioned && o.positioned) {
                 val gapCss = o.topCss - (prev.topCss + prev.heightCss)
-                if (gapCss <= contiguityEpsilon) {
+                // Require |gap| within epsilon. A strongly-negative gap
+                // means the walk order and DOM order disagree, and
+                // compressing there would drag the current overlay far
+                // below its real DOM position — visible symptom: an
+                // overlay "disappears" beyond the viewport bottom after
+                // a mid-thread expand. setOverlays keeps the map in DOM
+                // order to prevent this; this check forgives any future
+                // ordering slip cheaply.
+                if (gapCss in -contiguityEpsilon..contiguityEpsilon) {
                     // Contiguous chain: stack directly under previous overlay,
                     // absorbing this spacer's pinch overshoot into the chain.
                     prevTopPx + prev.view.measuredHeight

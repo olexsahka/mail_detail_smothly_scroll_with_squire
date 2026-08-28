@@ -55,9 +55,11 @@
 <body>
 <div id="editor"></div>
 <!-- DOMPurify is REQUIRED by Squire 2.x: setHTML() calls sanitizeToDOMFragment
-     and silently drops content if no sanitizer is provided. Load it first. -->
+     and silently drops content if no sanitizer is provided. Load it first.
+     Both scripts bundled in assets/ — no network dependency, no CDN supply-
+     chain risk, works offline. -->
 <script src="dompurify.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/squire-rte@2.3.0/build/squire-raw.js"></script>
+<script src="squire.js"></script>
 <script>
     var editor = null;
     var reportScheduled = false;
