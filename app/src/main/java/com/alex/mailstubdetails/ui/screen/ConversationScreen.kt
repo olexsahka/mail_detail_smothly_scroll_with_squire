@@ -31,7 +31,9 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.alex.mailstubdetails.model.EmailThread
+import com.alex.mailstubdetails.ui.conversation.CompactBarThreshold
 import com.alex.mailstubdetails.ui.conversation.ConversationOverlaySlot
+import com.alex.mailstubdetails.ui.conversation.ConversationStateReducer
 import com.alex.mailstubdetails.ui.conversation.ConversationView
 
 // Fake body-fetch pacing. The jitter keeps repeated taps from feeling
@@ -74,20 +76,23 @@ fun ConversationScreen(
     // In-flight fake-load requests. Guards against spamming taps: if a
     // load is already scheduled for a message, further collapse+expand
     // toggles reuse the same coroutine's result.
-    val pendingLoads = remember(thread.id) { mutableSetOf<String>() }
+    var pendingLoads by remember(thread.id) { mutableStateOf(emptySet<String>()) }
     val loadScope = rememberCoroutineScope()
 
     var scrollY by remember { mutableIntStateOf(0) }
     var appBarHeightPx by remember { mutableIntStateOf(0) }
 
     // Compact bar appears when the large bar has scrolled such that only
-    // compact-bar-worth of it remains visible: scrollY > largeH - compactH.
-    // largeH is the measured app-bar overlay height reported by the container;
-    // compactH is Material3's TopAppBar height (64dp).
+    // compact-bar-worth of it remains visible. largeH is the measured
+    // app-bar overlay height reported by the container; compactH is
+    // Material3's TopAppBar height (64dp).
     val density = LocalDensity.current
     val compactBarHeightPx = with(density) { 64.dp.toPx().toInt() }
-    val showCompact = appBarHeightPx > 0 &&
-        scrollY > (appBarHeightPx - compactBarHeightPx).coerceAtLeast(0)
+    val showCompact = CompactBarThreshold.shouldShowCompact(
+        scrollYPx = scrollY,
+        appBarHeightPx = appBarHeightPx,
+        compactBarHeightPx = compactBarHeightPx
+    )
 
     Scaffold { padding ->
         Box(
@@ -112,27 +117,27 @@ fun ConversationScreen(
                         onReplyAll = { onReply() },
                         onForward = { onReply() },
                         onToggleMessage = { msgId ->
-                            if (msgId in expandedIds) {
-                                // Collapse — loadedIds is deliberately NOT
-                                // cleared so re-expanding is instant. Same
-                                // as Gmail's "already fetched" behavior.
-                                expandedIds = expandedIds - msgId
-                            } else {
-                                expandedIds = expandedIds + msgId
-                                // Kick off a fake "network fetch" only if
-                                // we haven't cached this body yet AND no
-                                // load is already in-flight for it.
-                                if (msgId !in loadedIds &&
-                                    pendingLoads.add(msgId)
-                                ) {
-                                    loadScope.launch {
-                                        delay(FAKE_LOAD_DELAY_MS_MIN +
-                                            Random.nextLong(
-                                                FAKE_LOAD_DELAY_MS_JITTER
-                                            ))
-                                        loadedIds = loadedIds + msgId
-                                        pendingLoads.remove(msgId)
-                                    }
+                            val result = ConversationStateReducer.toggle(
+                                msgId = msgId,
+                                expanded = expandedIds,
+                                loaded = loadedIds,
+                                pending = pendingLoads
+                            )
+                            expandedIds = result.expanded
+                            pendingLoads = result.pending
+                            if (result.shouldStartLoad) {
+                                loadScope.launch {
+                                    delay(
+                                        FAKE_LOAD_DELAY_MS_MIN +
+                                            Random.nextLong(FAKE_LOAD_DELAY_MS_JITTER)
+                                    )
+                                    val done = ConversationStateReducer.markLoaded(
+                                        msgId = msgId,
+                                        loaded = loadedIds,
+                                        pending = pendingLoads
+                                    )
+                                    loadedIds = done.loaded
+                                    pendingLoads = done.pending
                                 }
                             }
                         }

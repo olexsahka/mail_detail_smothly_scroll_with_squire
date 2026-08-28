@@ -51,6 +51,9 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
     implementation("androidx.compose.material:material-icons-extended")
     testImplementation(libs.junit)
+    // org.json is provided at runtime by Android but not on the JVM
+    // classpath — vendor it in for pure unit tests (ConversationTemplateBuilder).
+    testImplementation("org.json:json:20240303")
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)

@@ -63,7 +63,7 @@ fun ConversationView(
     overlayContent: @Composable (OverlayDescriptor) -> Unit = { DefaultOverlayPlaceholder(it) }
 ) {
     val descriptors = remember(thread, expandedIds, loadedIds) {
-        buildDescriptors(thread, expandedIds, loadedIds)
+        OverlayDescriptorBuilder.build(thread, expandedIds, loadedIds)
     }
     val latestOverlayContent = rememberUpdatedState(overlayContent)
     val latestOnScrollChanged = rememberUpdatedState(onScrollChanged)
@@ -228,51 +228,6 @@ private fun syncWebView(container: ConversationContainer, state: BridgeState) {
         }
         state.lastSentLoadedIds = loaded
     }
-}
-
-private fun buildDescriptors(
-    thread: EmailThread,
-    expandedIds: Set<String>,
-    loadedIds: Set<String>
-): List<OverlayDescriptor> {
-    val list = ArrayList<OverlayDescriptor>(1 + thread.messages.size * 3)
-    list += OverlayDescriptor(
-        id = "app-bar",
-        kind = OverlayKind.APP_BAR,
-        msgId = null,
-        expanded = false
-    )
-    thread.messages.forEach { msg ->
-        val expanded = msg.id in expandedIds
-        val loaded = msg.id in loadedIds
-        list += OverlayDescriptor(
-            id = "header:${msg.id}",
-            kind = OverlayKind.MESSAGE_HEADER,
-            msgId = msg.id,
-            expanded = expanded
-        )
-        if (expanded && !loaded) {
-            // Native shimmer covers the DOM's `.msg-body-spacer` until
-            // setMessageLoaded swaps in the real content. Once loaded,
-            // this descriptor drops out of the list and the overlay is
-            // removed by setOverlays.
-            list += OverlayDescriptor(
-                id = "body:${msg.id}",
-                kind = OverlayKind.MESSAGE_BODY_LOADER,
-                msgId = msg.id,
-                expanded = true
-            )
-        }
-        if (expanded) {
-            list += OverlayDescriptor(
-                id = "footer:${msg.id}",
-                kind = OverlayKind.MESSAGE_FOOTER,
-                msgId = msg.id,
-                expanded = true
-            )
-        }
-    }
-    return list
 }
 
 /* ── Placeholder overlay (replaced by Phase C) ─────────────────────────── */

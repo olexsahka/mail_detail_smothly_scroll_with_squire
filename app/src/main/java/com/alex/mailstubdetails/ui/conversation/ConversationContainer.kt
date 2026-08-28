@@ -187,11 +187,8 @@ class ConversationContainer @JvmOverloads constructor(
             // the previous-frame scale would break atomicity and re-
             // introduce drift.
             if (!pinchActive && bridgeHasValue) {
-                val initial = webView.initialScale.takeIf { it > 0f } ?: 1f
-                val effectiveScale = bridgeScale * initial
-                if (effectiveScale > 0f) {
-                    bridgePageTopCss = newY / effectiveScale
-                }
+                BridgePageTopMath.predict(newY, bridgeScale, webView.initialScale)
+                    ?.let { bridgePageTopCss = it }
             }
             // Reposition SYNCHRONOUSLY in the same frame the WebView reports
             // its new scrollY. Routing through postOnAnimation would defer by
@@ -367,11 +364,8 @@ class ConversationContainer @JvmOverloads constructor(
         // settled on, so the overlay position stays continuous across
         // the pinch → scroll boundary without any decay/blend.
         if (bridgeHasValue) {
-            val initial = webView.initialScale.takeIf { it > 0f } ?: 1f
-            val effectiveScale = bridgeScale * initial
-            if (effectiveScale > 0f) {
-                bridgePageTopCss = webView.scrollY.toFloat() / effectiveScale
-            }
+            BridgePageTopMath.predict(webView.scrollY, bridgeScale, webView.initialScale)
+                ?.let { bridgePageTopCss = it }
         }
         // Flush the scrollY we suppressed during the pinch so the outer
         // CompactAppBar swap threshold catches up to the settled state.
@@ -557,56 +551,32 @@ class ConversationContainer @JvmOverloads constructor(
             val current = webView.currentScale.takeIf { it > 0f } ?: 1f
             current / initial
         }
-        val effectiveScale = pinchFactor * initial
-        val scrollOffsetPx = bridgePageTopCss * effectiveScale
-        val viewportH = height
-        // Sub-CSS-px tolerance when deciding whether two spacers are
-        // adjacent in DOM. JS reports floats from getBoundingClientRect
-        // and 0.5px rounding drift is normal.
-        val contiguityEpsilon = 0.5f
-        var prev: Overlay? = null
-        var prevTopPx = 0f
-        for (o in overlays.values) {
-            val naturalTopPx = o.topCss * effectiveScale - scrollOffsetPx
-            val topPx: Float = if (prev != null && prev.positioned && o.positioned) {
-                val gapCss = o.topCss - (prev.topCss + prev.heightCss)
-                // Require |gap| within epsilon. A strongly-negative gap
-                // means the walk order and DOM order disagree, and
-                // compressing there would drag the current overlay far
-                // below its real DOM position — visible symptom: an
-                // overlay "disappears" beyond the viewport bottom after
-                // a mid-thread expand. setOverlays keeps the map in DOM
-                // order to prevent this; this check forgives any future
-                // ordering slip cheaply.
-                if (gapCss in -contiguityEpsilon..contiguityEpsilon) {
-                    // Contiguous chain: stack directly under previous overlay,
-                    // absorbing this spacer's pinch overshoot into the chain.
-                    prevTopPx + prev.view.measuredHeight
-                } else {
-                    // Body content separates the chains — fall back to natural
-                    // DOM position so we don't cover the zoomed body.
-                    naturalTopPx
-                }
-            } else {
-                naturalTopPx
-            }
+        val geometries = overlays.values.map { o ->
+            OverlayLayoutMath.OverlayGeometry(
+                id = o.id,
+                topCss = o.topCss,
+                heightCss = o.heightCss,
+                measuredHeightPx = o.view.measuredHeight,
+                positioned = o.positioned
+            )
+        }
+        val placements = OverlayLayoutMath.layout(
+            overlays = geometries,
+            initialScale = initial,
+            pinchFactor = pinchFactor,
+            bridgePageTopCss = bridgePageTopCss,
+            viewportHeightPx = height
+        )
+        for ((placement, overlay) in placements.zip(overlays.values)) {
             // Overlays stay at density size — no visual scaling. Reset
             // defensively in case a previous frame left them scaled.
-            if (o.view.scaleX != 1f) o.view.scaleX = 1f
-            if (o.view.scaleY != 1f) o.view.scaleY = 1f
-            // translationY takes a float — no roundToInt() so we don't
-            // introduce ±1px jitter on each frame from subpixel scale
-            // values. The renderer snaps to device pixels at draw time.
-            if (o.view.translationY != topPx) o.view.translationY = topPx
-            val visualH = o.view.measuredHeight
-            val onScreen = topPx + visualH > 0f && topPx < viewportH
-            // Suppress a newly-added overlay until JS reports its actual
-            // position — otherwise it briefly renders at translationY=0
-            // (on top of the app bar).
-            val desired = if (o.positioned && onScreen) View.VISIBLE else View.INVISIBLE
-            if (o.view.visibility != desired) o.view.visibility = desired
-            prev = o
-            prevTopPx = topPx
+            if (overlay.view.scaleX != 1f) overlay.view.scaleX = 1f
+            if (overlay.view.scaleY != 1f) overlay.view.scaleY = 1f
+            if (overlay.view.translationY != placement.translationYPx) {
+                overlay.view.translationY = placement.translationYPx
+            }
+            val desired = if (placement.visible) View.VISIBLE else View.INVISIBLE
+            if (overlay.view.visibility != desired) overlay.view.visibility = desired
         }
     }
 

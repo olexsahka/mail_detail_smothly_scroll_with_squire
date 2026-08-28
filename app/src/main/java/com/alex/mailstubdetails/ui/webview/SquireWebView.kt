@@ -89,9 +89,12 @@ fun SquireWebViewContainer(
                     override fun onScaleEnd(detector: ScaleGestureDetector) {
                         webView.parent?.requestDisallowInterceptTouchEvent(false)
                         webView.post {
-                            heightDp = with(density) {
-                                (webView.contentHeight * webView.scale).toDp()
-                            }.coerceAtLeast(minHeight)
+                            heightDp = SquireHeightMath.heightDp(
+                                contentPx = webView.contentHeight,
+                                scale = webView.scale,
+                                density = density.density,
+                                minHeightDp = minHeight.value
+                            ).dp
                         }
                     }
                 }
@@ -150,9 +153,12 @@ fun SquireWebViewContainer(
                     @Suppress("DEPRECATION")
                     fun onHeightChanged(cssHeight: Int) {
                         webView.post {
-                            heightDp = with(density) {
-                                (cssHeight * webView.scale).toDp()
-                            }.coerceAtLeast(minHeight)
+                            heightDp = SquireHeightMath.heightDp(
+                                contentPx = cssHeight,
+                                scale = webView.scale,
+                                density = density.density,
+                                minHeightDp = minHeight.value
+                            ).dp
                         }
                     }
 
@@ -177,9 +183,12 @@ fun SquireWebViewContainer(
                     newScale: Float
                 ) {
                     view.post {
-                        heightDp = with(density) {
-                            (view.contentHeight * newScale).toDp()
-                        }.coerceAtLeast(minHeight)
+                        heightDp = SquireHeightMath.heightDp(
+                            contentPx = view.contentHeight,
+                            scale = newScale,
+                            density = density.density,
+                            minHeightDp = minHeight.value
+                        ).dp
                     }
                 }
             }
