@@ -401,6 +401,191 @@ private val BODY_INVOICE = """
 </div>
 """.trimIndent()
 
+// ─── fixLayout test bodies ──────────────────────────────────────────────────
+//
+// Each body targets a specific branch of fixLayout.js. Content is deliberately
+// oversized (fixed pixel widths) so the fix is visually obvious: without
+// fixLayout you'd see clipping / horizontal overflow; with it, content shrinks
+// to fit.
+//
+// Images use data:image/svg+xml — DOMPurify's remote-image blocker only rewrites
+// http(s) srcs, so data: passes through and gives us a self-contained sized
+// element without needing bundled assets.
+
+private fun svgDataUrl(width: Int, height: Int, hexNoHash: String, label: String): String {
+    val encoded = "%3Csvg xmlns='http://www.w3.org/2000/svg' width='$width' height='$height' viewBox='0 0 $width $height'%3E" +
+            "%3Crect width='$width' height='$height' fill='%23$hexNoHash'/%3E" +
+            "%3Ctext x='${width / 2}' y='${height / 2 + 20}' fill='white' font-size='64' text-anchor='middle' font-family='sans-serif' font-weight='bold'%3E$label%3C/text%3E" +
+            "%3C/svg%3E"
+    return "data:image/svg+xml,$encoded"
+}
+
+private val BODY_FIX_WIDE_TABLE = """
+<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#202124;line-height:1.6;">
+  <p><strong>Тест: широкая таблица (1800px).</strong></p>
+  <p>Без fixLayout таблица должна вылезти за экран и обрезаться. С fixLayout — уменьшиться через <code>transform: scale()</code>, обёрнутая в <code>&lt;span class="span-scaling-wrapper"&gt;</code>. Строки/колонки читаемы, но мельче.</p>
+
+  <table style="width:1800px;border-collapse:collapse;font-size:12px;margin:16px 0;">
+    <thead>
+      <tr style="background:#1a73e8;color:#fff;">
+        <th style="padding:8px 10px;">Region</th>
+        <th style="padding:8px 10px;">Q1 Revenue</th>
+        <th style="padding:8px 10px;">Q2 Revenue</th>
+        <th style="padding:8px 10px;">Q3 Revenue</th>
+        <th style="padding:8px 10px;">Q4 Forecast</th>
+        <th style="padding:8px 10px;">YoY Growth</th>
+        <th style="padding:8px 10px;">Deals Closed</th>
+        <th style="padding:8px 10px;">Owner</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td style="padding:8px 10px;">North America</td><td style="padding:8px 10px;">${'$'}4,120,000</td><td style="padding:8px 10px;">${'$'}4,480,000</td><td style="padding:8px 10px;">${'$'}4,910,000</td><td style="padding:8px 10px;">${'$'}5,300,000</td><td style="padding:8px 10px;color:#0f9d58;">+18.4%</td><td style="padding:8px 10px;">247</td><td style="padding:8px 10px;">M. Chen</td></tr>
+      <tr style="background:#f8f9fa;"><td style="padding:8px 10px;">EMEA</td><td style="padding:8px 10px;">${'$'}3,220,000</td><td style="padding:8px 10px;">${'$'}3,410,000</td><td style="padding:8px 10px;">${'$'}3,690,000</td><td style="padding:8px 10px;">${'$'}3,950,000</td><td style="padding:8px 10px;color:#0f9d58;">+12.1%</td><td style="padding:8px 10px;">189</td><td style="padding:8px 10px;">S. Weber</td></tr>
+      <tr><td style="padding:8px 10px;">APAC</td><td style="padding:8px 10px;">${'$'}2,780,000</td><td style="padding:8px 10px;">${'$'}3,010,000</td><td style="padding:8px 10px;">${'$'}3,360,000</td><td style="padding:8px 10px;">${'$'}3,720,000</td><td style="padding:8px 10px;color:#0f9d58;">+22.9%</td><td style="padding:8px 10px;">156</td><td style="padding:8px 10px;">R. Tanaka</td></tr>
+      <tr style="background:#f8f9fa;"><td style="padding:8px 10px;">LATAM</td><td style="padding:8px 10px;">${'$'}940,000</td><td style="padding:8px 10px;">${'$'}1,080,000</td><td style="padding:8px 10px;">${'$'}1,220,000</td><td style="padding:8px 10px;">${'$'}1,410,000</td><td style="padding:8px 10px;color:#0f9d58;">+31.5%</td><td style="padding:8px 10px;">83</td><td style="padding:8px 10px;">L. Ortega</td></tr>
+      <tr><td style="padding:8px 10px;">Middle East</td><td style="padding:8px 10px;">${'$'}510,000</td><td style="padding:8px 10px;">${'$'}640,000</td><td style="padding:8px 10px;">${'$'}780,000</td><td style="padding:8px 10px;">${'$'}910,000</td><td style="padding:8px 10px;color:#0f9d58;">+41.2%</td><td style="padding:8px 10px;">44</td><td style="padding:8px 10px;">A. Rahman</td></tr>
+    </tbody>
+  </table>
+
+  <p>После таблицы обычный параграф — оверлеи следующего сообщения не должны прыгать после того, как fixLayout закончит масштабирование.</p>
+</div>
+""".trimIndent()
+
+private val BODY_FIX_WIDE_IMAGES = """
+<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#202124;line-height:1.6;">
+  <p><strong>Тест: широкие картинки (1400px и 1000px).</strong></p>
+  <p>Ожидаем: обе картинки получат inline <code>style="max-width: N px"</code>, где N — ширина <code>.msg-body</code> минус padding. Aspect ratio сохранён (<code>height: auto</code>).</p>
+
+  <p style="margin-top:16px;"><em>1400×320 — заведомо шире экрана:</em></p>
+  <img width="1400" height="320" src="${svgDataUrl(1400, 320, "ff5722", "1400 x 320")}" alt="wide 1400">
+
+  <p style="margin-top:16px;"><em>1000×280 — тоже шире большинства экранов:</em></p>
+  <img width="1000" height="280" src="${svgDataUrl(1000, 280, "1a73e8", "1000 x 280")}" alt="wide 1000">
+
+  <p style="margin-top:16px;"><em>600×200 — уже влезает, fixLayout НЕ должен трогать:</em></p>
+  <img width="600" height="200" src="${svgDataUrl(600, 200, "0f9d58", "600 x 200")}" alt="narrow 600">
+</div>
+""".trimIndent()
+
+private val BODY_FIX_WIDE_DIV = """
+<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#202124;line-height:1.6;">
+  <p><strong>Тест: блочный элемент с фиксированной шириной (1500px).</strong></p>
+  <p>Ожидаем: <code>transformBlockElements</code> сбросит <code>width</code>/<code>minWidth</code> и поставит <code>max-width: availableWidth</code>. Розовый блок ниже НЕ должен вылезать за пределы экрана.</p>
+
+  <div style="width:1500px;background:#fce4ec;border:2px solid #c2185b;padding:20px;margin:16px 0;color:#880e4f;font-weight:600;">
+    Я — <code>&lt;div style="width: 1500px"&gt;</code>. Без fixLayout я торчу за правый край экрана и обрезаюсь.
+    С fixLayout мне сбрасывают width, ставят max-width доступной ширины и box-sizing: border-box.
+  </div>
+
+  <p><strong>Второй сценарий:</strong> блок с <code>minWidth: 1200px</code> (без явного width):</p>
+
+  <div style="min-width:1200px;background:#e8f5e9;border:2px solid #2e7d32;padding:20px;margin:16px 0;color:#1b5e20;font-weight:600;">
+    Я — <code>&lt;div style="min-width: 1200px"&gt;</code>. Без fixLayout я растягиваю страницу и заставляю body скроллиться по X.
+  </div>
+
+  <p><strong>Третий:</strong> вложенный div внутри обычного (fixed 1300px):</p>
+
+  <div style="background:#eff6ff;border:1px solid #90caf9;padding:12px;">
+    <p style="margin:0 0 10px;">Внешний блок обычной ширины.</p>
+    <div style="width:1300px;background:#fff3e0;border:2px solid #f57c00;padding:14px;color:#e65100;">
+      А я вложенный <code>width: 1300px</code> — тоже должен ужаться.
+    </div>
+  </div>
+</div>
+""".trimIndent()
+
+private val BODY_FIX_HUGE_TABLE = """
+<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#202124;line-height:1.6;">
+  <p><strong>Тест: гигантская таблица (3500px, шире порога MAX_DOCUMENT_WIDTH_TO_TRANSFORM=3000).</strong></p>
+  <p>fixLayout сознательно ПРОПУСКАЕТ такой контент — уменьшать до нечитаемого зума нет смысла. Вместо этого наш fallback ставит <code>.mail-scale-wrapper { overflow-x: auto }</code>, чтобы пользователь мог проскроллить по горизонтали (а не тихо потерять правую часть под <code>.msg-body { overflow-x: hidden }</code>).</p>
+
+  <p><em>↓ Проведите по таблице пальцем влево — должна прокрутиться:</em></p>
+
+  <table style="width:3500px;border-collapse:collapse;font-size:11px;margin:16px 0;">
+    <thead>
+      <tr style="background:#c62828;color:#fff;">
+        ${(1..20).joinToString("") { "<th style=\"padding:6px 10px;\">Col $it</th>" }}
+      </tr>
+    </thead>
+    <tbody>
+      ${(1..8).joinToString("") { row ->
+        val bg = if (row % 2 == 0) "background:#fef2f2;" else ""
+        "<tr style=\"$bg\">" +
+        (1..20).joinToString("") { col -> "<td style=\"padding:6px 10px;border:1px solid #fecaca;\">R${row}C${col}</td>" } +
+        "</tr>"
+    }}
+    </tbody>
+  </table>
+
+  <p>Параграф после гигантской таблицы. Он должен нормально помещаться по ширине — не должен тоже стать скроллящимся.</p>
+</div>
+""".trimIndent()
+
+private val BODY_FIX_CHAIN_INTRO = """
+<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#202124;line-height:1.6;">
+  <p><strong>Тест: цепочка сообщений с разной widecontent.</strong></p>
+  <p>Это сообщение — <strong>preloaded + pre-expanded</strong> (первое в треде). Проверяет фикс #1: <code>formatMessageBody</code> должен вызываться в <code>appendMessage</code> при первом рендере, а не только при <code>setMessageLoaded</code>/<code>toggleExpanded</code>.</p>
+
+  <p>Ниже — широкая таблица (1600px):</p>
+
+  <table style="width:1600px;border-collapse:collapse;font-size:12px;margin:12px 0;">
+    <thead>
+      <tr style="background:#673ab7;color:#fff;">
+        <th style="padding:8px 12px;">ID</th>
+        <th style="padding:8px 12px;">Component</th>
+        <th style="padding:8px 12px;">Test scenario</th>
+        <th style="padding:8px 12px;">Expected</th>
+        <th style="padding:8px 12px;">Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td style="padding:8px 12px;">FL-01</td><td style="padding:8px 12px;">fixLayout.js</td><td style="padding:8px 12px;">Table &gt; viewport width</td><td style="padding:8px 12px;">scale transform applied</td><td style="padding:8px 12px;color:#0f9d58;">Pending</td></tr>
+      <tr style="background:#f3e5f5;"><td style="padding:8px 12px;">FL-02</td><td style="padding:8px 12px;">fixLayout.js</td><td style="padding:8px 12px;">Image with width=1400</td><td style="padding:8px 12px;">inline max-width set</td><td style="padding:8px 12px;color:#0f9d58;">Pending</td></tr>
+      <tr><td style="padding:8px 12px;">FL-03</td><td style="padding:8px 12px;">fixLayout.js</td><td style="padding:8px 12px;">Div style="width:1500px"</td><td style="padding:8px 12px;">width reset + max-width</td><td style="padding:8px 12px;color:#0f9d58;">Pending</td></tr>
+      <tr style="background:#f3e5f5;"><td style="padding:8px 12px;">FL-04</td><td style="padding:8px 12px;">fixLayout.js</td><td style="padding:8px 12px;">Content &gt; 3000px</td><td style="padding:8px 12px;">horizontal scroll fallback</td><td style="padding:8px 12px;color:#0f9d58;">Pending</td></tr>
+    </tbody>
+  </table>
+</div>
+""".trimIndent()
+
+private val BODY_FIX_CHAIN_IMAGES = """
+<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#202124;line-height:1.6;">
+  <p>Второе сообщение цепочки. Grузится <strong>лениво</strong> (через 550-900ms fake network) при раскрытии — <code>setMessageLoaded</code> триггерит <code>formatMessageBody</code>.</p>
+
+  <p>Проверка: после раскрытия и загрузки картинки/дивы ниже должны быть подогнаны, а <strong>оверлеи следующих сообщений не должны прыгнуть</strong> дважды (сначала под сырую вставку, потом под fix). Мы для этого убрали двойной <code>scheduleMeasure</code>.</p>
+
+  <img width="1600" height="360" src="${svgDataUrl(1600, 360, "e91e63", "1600 x 360")}" alt="wide 1600">
+
+  <div style="width:1400px;background:#fff8e1;border:2px solid #f57f17;padding:16px;margin-top:16px;color:#e65100;font-weight:600;">
+    Блок <code>width: 1400px</code> под картинкой — должен ужаться параллельно.
+  </div>
+</div>
+""".trimIndent()
+
+private val BODY_FIX_CHAIN_HUGE = """
+<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#202124;line-height:1.6;">
+  <p>Третье сообщение. Тоже <strong>лениво загружаемое</strong>. Содержит контент шире порога — должен появиться горизонтальный скролл на mail-scale-wrapper, а не тихий клип.</p>
+
+  <table style="width:3600px;border-collapse:collapse;font-size:11px;margin:12px 0;">
+    <thead>
+      <tr style="background:#00695c;color:#fff;">
+        ${(1..24).joinToString("") { "<th style=\"padding:6px 10px;\">Col$it</th>" }}
+      </tr>
+    </thead>
+    <tbody>
+      ${(1..5).joinToString("") { row ->
+        val bg = if (row % 2 == 0) "background:#e0f2f1;" else ""
+        "<tr style=\"$bg\">" +
+        (1..24).joinToString("") { col -> "<td style=\"padding:6px 10px;border:1px solid #b2dfdb;\">R${row}C${col}</td>" } +
+        "</tr>"
+    }}
+    </tbody>
+  </table>
+
+  <p>После таблицы — обычный текст, должен помещаться и не быть скроллящимся сам по себе.</p>
+</div>
+""".trimIndent()
+
 // ─── Threads ────────────────────────────────────────────────────────────────
 
 val MOCK_THREADS: List<EmailThread> = listOf(
@@ -504,6 +689,118 @@ val MOCK_THREADS: List<EmailThread> = listOf(
                 plainPreview = "Invoice #INV-2024-1047 · Total: \$167.56 · Status: PAID — Thank you for your business.",
                 isRead = false,
                 hasAttachment = true
+            )
+        )
+    ),
+
+    // ─── fixLayout test threads ─────────────────────────────────────────────
+    // Each thread targets one branch. Open, watch for shrinking/scroll fallback.
+    // Rotate the device to also validate the resize handler in fixLayout.js.
+
+    EmailThread(
+        id = "thread_fix_1",
+        subject = "[TEST 1] Wide table (1800px) → scale transform",
+        messages = listOf(
+            EmailMessage(
+                id = "msg_fix_1a",
+                fromName = "fixLayout QA",
+                fromEmail = "qa@mailstubdetails.local",
+                toList = listOf("alex@mailstubdetails.com"),
+                subject = "[TEST 1] Wide table (1800px) → scale transform",
+                date = "Nov 5, 9:00 AM",
+                htmlBody = BODY_FIX_WIDE_TABLE,
+                plainPreview = "Regional revenue table with 8 columns spanning 1800px — should shrink via transform: scale() wrapped in span.span-scaling-wrapper.",
+                isRead = false
+            )
+        )
+    ),
+    EmailThread(
+        id = "thread_fix_2",
+        subject = "[TEST 2] Wide images (1400/1000/600) → inline max-width",
+        messages = listOf(
+            EmailMessage(
+                id = "msg_fix_2a",
+                fromName = "fixLayout QA",
+                fromEmail = "qa@mailstubdetails.local",
+                toList = listOf("alex@mailstubdetails.com"),
+                subject = "[TEST 2] Wide images (1400/1000/600) → inline max-width",
+                date = "Nov 5, 9:10 AM",
+                htmlBody = BODY_FIX_WIDE_IMAGES,
+                plainPreview = "Three SVG images at 1400 / 1000 / 600 CSS px. First two should get max-width clamped; third stays untouched.",
+                isRead = false
+            )
+        )
+    ),
+    EmailThread(
+        id = "thread_fix_3",
+        subject = "[TEST 3] Fixed-width divs (1500/1200/1300) → width reset",
+        messages = listOf(
+            EmailMessage(
+                id = "msg_fix_3a",
+                fromName = "fixLayout QA",
+                fromEmail = "qa@mailstubdetails.local",
+                toList = listOf("alex@mailstubdetails.com"),
+                subject = "[TEST 3] Fixed-width divs (1500/1200/1300) → width reset",
+                date = "Nov 5, 9:20 AM",
+                htmlBody = BODY_FIX_WIDE_DIV,
+                plainPreview = "Three block elements with fixed width/min-width in inline style — transformBlockElements should clear width and set max-width to availableWidth.",
+                isRead = false
+            )
+        )
+    ),
+    EmailThread(
+        id = "thread_fix_4",
+        subject = "[TEST 4] Huge table (3500px) → horizontal scroll fallback",
+        messages = listOf(
+            EmailMessage(
+                id = "msg_fix_4a",
+                fromName = "fixLayout QA",
+                fromEmail = "qa@mailstubdetails.local",
+                toList = listOf("alex@mailstubdetails.com"),
+                subject = "[TEST 4] Huge table (3500px) → horizontal scroll fallback",
+                date = "Nov 5, 9:30 AM",
+                htmlBody = BODY_FIX_HUGE_TABLE,
+                plainPreview = "Table wider than MAX_DOCUMENT_WIDTH_TO_TRANSFORM (3000px). fixLayout skips scaling; wrapper gets overflow-x:auto so user can pan.",
+                isRead = false
+            )
+        )
+    ),
+    EmailThread(
+        id = "thread_fix_5",
+        subject = "[TEST 5] Multi-message chain (preloaded + 2 lazy)",
+        messages = listOf(
+            EmailMessage(
+                id = "msg_fix_5a",
+                fromName = "fixLayout QA",
+                fromEmail = "qa@mailstubdetails.local",
+                toList = listOf("alex@mailstubdetails.com"),
+                subject = "[TEST 5] Multi-message chain (preloaded + 2 lazy)",
+                date = "Nov 5, 9:40 AM",
+                htmlBody = BODY_FIX_CHAIN_INTRO,
+                plainPreview = "First message is preloaded + pre-expanded — verifies appendMessage triggers formatMessageBody (fix #1).",
+                isRead = false
+            ),
+            EmailMessage(
+                id = "msg_fix_5b",
+                fromName = "fixLayout QA",
+                fromEmail = "qa@mailstubdetails.local",
+                toList = listOf("alex@mailstubdetails.com"),
+                subject = "Re: [TEST 5] Multi-message chain",
+                date = "Nov 5, 9:45 AM",
+                htmlBody = BODY_FIX_CHAIN_IMAGES,
+                plainPreview = "Lazy-loaded second message: wide image + wide div. Verifies setMessageLoaded → formatMessageBody and single scheduleMeasure (no overlay jump).",
+                isRead = false
+            ),
+            EmailMessage(
+                id = "msg_fix_5c",
+                fromName = "fixLayout QA",
+                fromEmail = "qa@mailstubdetails.local",
+                toList = listOf("alex@mailstubdetails.com"),
+                subject = "Re: [TEST 5] Multi-message chain",
+                date = "Nov 5, 9:50 AM",
+                htmlBody = BODY_FIX_CHAIN_HUGE,
+                plainPreview = "Lazy-loaded third message: huge table. Verifies scroll fallback works after lazy load, not just at initial render.",
+                isRead = false
             )
         )
     )

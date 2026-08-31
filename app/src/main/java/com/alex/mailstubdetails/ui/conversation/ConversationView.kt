@@ -241,8 +241,10 @@ private fun syncWebView(container: ConversationContainer, state: BridgeState) {
         // setSpacerHeight writes are lost, so drop the "already sent" cache.
         container.resetSpacerHeightCache()
         // Base64 sidesteps all JS string-escaping edge cases in the JSON.
+        // Pass the b64 as-is — JS decodes via TextDecoder to preserve UTF-8
+        // (atob alone gives Latin-1 bytes, which mangles Cyrillic/emoji).
         container.webView.evaluateJavascript(
-            "renderThread(JSON.parse(atob('$b64')))",
+            "renderThread('$b64')",
             null
         )
         state.lastSentThreadId = thread.id

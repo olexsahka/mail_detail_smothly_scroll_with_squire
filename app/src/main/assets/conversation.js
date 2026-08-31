@@ -61,10 +61,27 @@
 
     /* ── Rendering ─────────────────────────────────────────────────────── */
 
-    function renderThread(payloadJson) {
+    // atob → Latin-1 binary string; the escape/decodeURIComponent hack
+    // reinterprets those bytes as UTF-8 so Cyrillic/emoji survive intact.
+    // Same pattern setMessageLoaded already uses for the lazy-body path.
+    function b64ToUtf8(b64) {
+        return decodeURIComponent(escape(atob(b64)));
+    }
+
+    function renderThread(payloadOrB64) {
         try {
-            var data = typeof payloadJson === 'string'
-                ? JSON.parse(payloadJson) : payloadJson;
+            var data;
+            if (typeof payloadOrB64 === 'string') {
+                // Kotlin path: base64-encoded UTF-8 JSON. Legacy fallback:
+                // if the caller passed raw JSON (starts with '{'), parse it
+                // directly.
+                var raw = payloadOrB64.charAt(0) === '{'
+                    ? payloadOrB64
+                    : b64ToUtf8(payloadOrB64);
+                data = JSON.parse(raw);
+            } else {
+                data = payloadOrB64;
+            }
 
             var root = document.getElementById('conversation');
             root.innerHTML = '';
@@ -112,7 +129,15 @@
         var body = document.createElement('div');
         body.className = 'msg-body';
         body.dataset.msgId = msg.id;
-        body.appendChild(sanitize(msg.html || ''));
+        // Content wrapper for fixLayout: it walks/mutates children of
+        // .mail-scale-wrapper (transform tables, scale images) and applies
+        // CSS `zoom` on the wrapper as a last-resort down-scaling. Keeping
+        // the wrapper separate from .msg-body lets msg-body's padding /
+        // measurement stay stable while wrapper geometry changes.
+        var scaleWrapper = document.createElement('div');
+        scaleWrapper.className = 'mail-scale-wrapper';
+        scaleWrapper.appendChild(sanitize(msg.html || ''));
+        body.appendChild(scaleWrapper);
         return body;
     }
 
@@ -129,13 +154,21 @@
         root.appendChild(header);
 
         if (msg.expanded) {
-            root.appendChild(buildBody(msg));
+            var body = buildBody(msg);
+            root.appendChild(body);
 
             var footer = document.createElement('div');
             footer.className = 'msg-footer-spacer';
             footer.dataset.overlay = 'footer:' + msg.id;
             footer.dataset.msgId = msg.id;
             root.appendChild(footer);
+
+            // Preloaded, pre-expanded messages skip both setMessageLoaded and
+            // toggleExpanded — kick fixLayout here so wide content in the
+            // first-open body is scaled instead of clipping.
+            if (msg.loaded && typeof window.formatMessageBody === 'function') {
+                window.formatMessageBody(body);
+            }
         }
     }
 
@@ -164,6 +197,16 @@
             var afterHeader = header.nextSibling;
             parent.insertBefore(body, afterHeader);
             parent.insertBefore(footer, body.nextSibling);
+
+            if (msg.loaded && typeof window.formatMessageBody === 'function') {
+                // fixLayout schedules its own measure once layout settles;
+                // don't fire a second scheduleMeasure here — the first would
+                // report pre-scaled geometry and overlays would jump when
+                // the fixLayout pass lands.
+                window.formatMessageBody(body);
+            } else {
+                scheduleMeasure();
+            }
         } else {
             var body = document.querySelector(
                 '.msg-body[data-msg-id="' + msgId + '"]'
@@ -173,8 +216,8 @@
             );
             if (body) body.parentNode.removeChild(body);
             if (footer) footer.parentNode.removeChild(footer);
+            scheduleMeasure();
         }
-        scheduleMeasure();
     }
 
     /**
@@ -208,7 +251,13 @@
 
         var body = buildLoadedBody(msg);
         spacer.parentNode.replaceChild(body, spacer);
-        scheduleMeasure();
+        if (typeof window.formatMessageBody === 'function') {
+            // See toggleExpanded — fixLayout owns the follow-up scheduleMeasure
+            // to avoid a two-phase overlay jump (pre-scale → post-scale).
+            window.formatMessageBody(body);
+        } else {
+            scheduleMeasure();
+        }
     }
 
     /* ── Spacer height sync (native -> HTML) ───────────────────────────── */
@@ -276,6 +325,9 @@
     window.setSpacerHeight = setSpacerHeight;
     window.setMessageLoaded = setMessageLoaded;
     window.measurePositions = measurePositions;
+    // Exposed so fixLayout.js can request a fresh geometry report after it
+    // finishes mutating message-body DOM (wrapping tables, scaling images).
+    window.scheduleMeasure = scheduleMeasure;
 
     /* ── Realtime viewport reporter (visualViewport) ───────────────────── */
 
