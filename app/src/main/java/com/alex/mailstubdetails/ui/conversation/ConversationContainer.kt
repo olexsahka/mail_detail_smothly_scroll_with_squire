@@ -1,11 +1,13 @@
 package com.alex.mailstubdetails.ui.conversation
 
+import android.animation.ValueAnimator
 import android.content.Context
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
+import android.view.animation.AccelerateDecelerateInterpolator
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import org.json.JSONObject
@@ -90,6 +92,69 @@ class ConversationContainer @JvmOverloads constructor(
 
     private var appBarHeightPx: Int = 0
 
+    /**
+     * Y coordinate (container-local device px) used to decide which message
+     * is the *currently focused one* — typically set by the screen to the
+     * compact app bar's height so that a header sliding under the compact
+     * bar becomes the "current" message. Zero (default) means "top of
+     * container", which matches the behavior when no compact bar is drawn.
+     */
+    var focusThresholdPx: Int = 0
+        set(value) {
+            if (field == value) return
+            field = value
+            // Re-evaluate focus with the new threshold on the next frame.
+            postOnAnimation { evaluateFocusedMessage() }
+        }
+
+    /**
+     * Emits the msgId of the topmost message whose header has scrolled at
+     * or above [focusThresholdPx]. Fires only on change. `null` means no
+     * header has reached the threshold yet (screen typically defaults to
+     * the first message in that case).
+     */
+    var onFocusedMessageChanged: (msgId: String?) -> Unit = {}
+
+    private var focusedMsgId: String? = null
+
+    /**
+     * When the user explicitly navigates via [scrollToMessage] (prev/next
+     * arrows), we pin focus to the requested msg regardless of where the
+     * animator ultimately lands — because at the tail of a thread the
+     * remaining content may not fill the viewport, and clamping the scroll
+     * would otherwise leave focus stuck on a *previous* message (making
+     * repeated NEXT taps a no-op: hasNext/hasPrev never advance past the
+     * last reachable header).
+     *
+     * Cleared by a user touch (see [dispatchTouchEvent]) — that's the
+     * signal that the user is now driving focus themselves via a scroll
+     * gesture, so autotracking should take over again.
+     */
+    private var focusOverrideMsgId: String? = null
+
+    /** In-flight prev/next smooth scroll; cancelled on a new tap. */
+    private var scrollAnimator: ValueAnimator? = null
+
+    companion object {
+        const val APP_BAR_OVERLAY_ID: String = "app-bar"
+        /** Must match the id scheme produced by [OverlayDescriptorBuilder]. */
+        internal const val HEADER_ID_PREFIX: String = "header:"
+
+        /** Duration of prev/next smooth scroll. */
+        private const val SMOOTH_SCROLL_DURATION_MS: Long = 320L
+
+        /**
+         * Tolerance (device px) when comparing an overlay's translationY
+         * against [focusThresholdPx]. `scrollToMessage` aims to land
+         * exactly at the threshold, but float rounding during the
+         * `topCss * effectiveScale` conversion can leave a sub-pixel
+         * drift — without a tolerance the check `translationY <=
+         * threshold` sometimes fails and focus stays on the previous
+         * message, disabling the "next" arrow after the very first jump.
+         */
+        private const val FOCUS_THRESHOLD_TOLERANCE_PX: Float = 1f
+    }
+
     /** Set by [requestGeometryUpdate]; cleared inside the postOnAnimation runnable. */
     private var geometryUpdatePosted: Boolean = false
 
@@ -155,10 +220,6 @@ class ConversationContainer @JvmOverloads constructor(
 
     /** True after the JS reporter has fired at least once. */
     private var bridgeHasValue: Boolean = false
-
-    companion object {
-        const val APP_BAR_OVERLAY_ID: String = "app-bar"
-    }
 
     init {
         // Defensive clipping: overlays live at (0,0,w,h) with negative
@@ -340,6 +401,14 @@ class ConversationContainer @JvmOverloads constructor(
         // called — but a user can still put a second finger down mid-scroll
         // to start a pinch, and we need to see it.
         when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                // Any user touch aborts a prev/next smooth scroll —
+                // otherwise the animator fights the user's drag.
+                scrollAnimator?.cancel()
+                // The user is now driving scroll themselves; hand focus
+                // tracking back to the autotracker.
+                focusOverrideMsgId = null
+            }
             MotionEvent.ACTION_POINTER_DOWN -> {
                 if (ev.pointerCount >= 2) pinchActive = true
             }
@@ -578,6 +647,151 @@ class ConversationContainer @JvmOverloads constructor(
             val desired = if (placement.visible) View.VISIBLE else View.INVISIBLE
             if (overlay.view.visibility != desired) overlay.view.visibility = desired
         }
+        evaluateFocusedMessage(placements)
+    }
+
+    /**
+     * Recompute [focusedMsgId] from the last placements pass. "Focused" =
+     * the last message header (in DOM order) whose `translationY <=
+     * focusThresholdPx`. If no header has reached the threshold yet,
+     * emits null (screen defaults to first message).
+     *
+     * Called from [positionOverlays] each frame and from the
+     * [focusThresholdPx] setter when the screen updates it (e.g. after
+     * the compact bar height first arrives). Fires only on change.
+     */
+    private fun evaluateFocusedMessage(
+        placements: List<OverlayLayoutMath.OverlayPlacement>? = null
+    ) {
+        // Explicit navigation wins over auto-tracking until the user touches.
+        // See [focusOverrideMsgId] for why.
+        focusOverrideMsgId?.let { override ->
+            if (override != focusedMsgId) {
+                focusedMsgId = override
+                onFocusedMessageChanged(override)
+            }
+            return
+        }
+        val pairs: Iterable<Pair<OverlayLayoutMath.OverlayPlacement, Overlay>> =
+            if (placements != null) {
+                placements.zip(overlays.values)
+            } else {
+                overlays.values.map { o ->
+                    OverlayLayoutMath.OverlayPlacement(
+                        id = o.id,
+                        translationYPx = o.view.translationY,
+                        visible = true
+                    ) to o
+                }
+            }
+        var newFocus: String? = null
+        val threshold = focusThresholdPx.toFloat() + FOCUS_THRESHOLD_TOLERANCE_PX
+        for ((placement, overlay) in pairs) {
+            if (!overlay.id.startsWith(HEADER_ID_PREFIX)) continue
+            if (!overlay.positioned) continue
+            if (placement.translationYPx <= threshold) {
+                newFocus = overlay.id.removePrefix(HEADER_ID_PREFIX)
+            }
+        }
+        if (newFocus != focusedMsgId) {
+            focusedMsgId = newFocus
+            onFocusedMessageChanged(newFocus)
+        }
+    }
+
+    /**
+     * Smoothly scroll so that the header of [msgId] sits at
+     * [focusThresholdPx] in screen px (just under the compact app bar, or
+     * at the top if none is drawn). No-op if the target header hasn't been
+     * measured by JS yet, or if the WebView scale isn't known yet.
+     *
+     * Uses a native [ValueAnimator] on [android.webkit.WebView.scrollTo]
+     * rather than JS `window.scrollTo({behavior:'smooth'})` because
+     * (a) not all Android WebView builds honor the smooth-behavior
+     *     option — some jump instantly, others no-op entirely, which broke
+     *     the "next" arrow the second time you tapped it (focus never
+     *     updated because scrollY never changed);
+     * (b) the native scroll fires `WebView.onScrollChanged` per frame, so
+     *     our overlay-repositioning + focus-tracking pipeline stays in
+     *     sync without depending on `visualViewport` behavior across
+     *     WebView versions.
+     */
+    fun scrollToMessage(msgId: String) {
+        val overlay = overlays[HEADER_ID_PREFIX + msgId] ?: return
+        if (!overlay.positioned) return
+        val initial = webView.initialScale.takeIf { it > 0f } ?: return
+        val effectiveScale = bridgeScale * initial
+        if (effectiveScale <= 0f) return
+        // Clamp target to what the compositor can actually scroll to. Without
+        // this, targeting a message near the end of a thread where the
+        // remaining content doesn't fill the viewport would send `scrollTo`
+        // past max — the compositor clamps DOM movement while our prediction
+        // path still moves overlays as if we reached the requested Y. Visible
+        // result: the target header overlay slides to the threshold while the
+        // previous (expanded) message's DOM body remains under it, and the
+        // header appears to "overlay on" the still-visible body.
+        val contentHeightPx = (contentHeightCss * effectiveScale).toInt()
+        val maxScrollable = (contentHeightPx - height).coerceAtLeast(0)
+        val targetY = (overlay.topCss * effectiveScale - focusThresholdPx)
+            .toInt()
+            .coerceIn(0, maxScrollable)
+        // Pin focus to the requested msg before the animator runs. Auto-
+        // tracking is threshold-based, so a target that the clamp above
+        // can't bring to the threshold (last messages of a short thread)
+        // would otherwise leave focus stuck on the previous message and
+        // repeated NEXT taps a no-op. The override releases on user touch
+        // (see [dispatchTouchEvent]).
+        focusOverrideMsgId = msgId
+        if (focusedMsgId != msgId) {
+            focusedMsgId = msgId
+            onFocusedMessageChanged(msgId)
+        }
+        // No-op scroll still needs to nudge focus in case the caller's
+        // notion of the current message drifted; evaluateFocusedMessage
+        // recomputes from current placements.
+        if (targetY == webView.scrollY) {
+            evaluateFocusedMessage()
+            return
+        }
+        scrollAnimator?.cancel()
+        scrollAnimator = ValueAnimator.ofInt(webView.scrollY, targetY).apply {
+            duration = SMOOTH_SCROLL_DURATION_MS
+            interpolator = AccelerateDecelerateInterpolator()
+            addUpdateListener { anim ->
+                val y = anim.animatedValue as Int
+                webView.scrollTo(0, y)
+                // Belt-and-suspenders: reposition overlays in the SAME frame
+                // as the scrollTo. Chromium-WebView's programmatic scrollTo
+                // sometimes defers `onScrollChanged` by a frame relative to
+                // the compositor commit, which leaves native overlays a
+                // frame behind the DOM — visible as a header-overlay
+                // covering the wrong slice of content mid-animation until
+                // the next scroll event arrives. Touch scrolls don't have
+                // this problem because they enter through the View
+                // hierarchy synchronously; only programmatic scroll does.
+                //
+                // Predict from the CLAMPED `webView.scrollY`, not the
+                // animator's requested `y`. If the compositor clamped (e.g.
+                // targetY exceeded max scroll despite our own clamp, or the
+                // content grew/shrunk mid-animation), predicting from the
+                // request would place overlays at positions the DOM never
+                // reached — reproducing the exact "collapsed overlays on
+                // expanded" bug we clamped against above.
+                val actualY = webView.scrollY
+                if (bridgeHasValue) {
+                    BridgePageTopMath.predict(actualY, bridgeScale, webView.initialScale)
+                        ?.let { bridgePageTopCss = it }
+                }
+                positionOverlays()
+            }
+            start()
+        }
+    }
+
+    /** Cancel any in-flight [scrollToMessage] animation — call before disposal. */
+    fun cancelPendingScroll() {
+        scrollAnimator?.cancel()
+        scrollAnimator = null
     }
 
     /**

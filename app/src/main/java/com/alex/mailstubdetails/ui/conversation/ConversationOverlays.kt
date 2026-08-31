@@ -23,20 +23,29 @@ fun ConversationOverlaySlot(
     onReply: (msgId: String) -> Unit,
     onReplyAll: (msgId: String) -> Unit,
     onForward: (msgId: String) -> Unit,
-    onToggleMessage: (msgId: String) -> Unit
+    onToggleMessage: (msgId: String) -> Unit,
+    hasPrev: Boolean = false,
+    hasNext: Boolean = false,
+    onPrev: () -> Unit = {},
+    onNext: () -> Unit = {}
 ) {
     when (descriptor.kind) {
         OverlayKind.APP_BAR -> LargeAppBarOverlay(
             subject = thread.subject,
             messageCount = thread.messageCount,
             onBack = onBack,
-            onMore = onMore
+            onMore = onMore,
+            hasPrev = hasPrev,
+            hasNext = hasNext,
+            onPrev = onPrev,
+            onNext = onNext
         )
         OverlayKind.MESSAGE_HEADER -> {
             val msg = thread.messages.firstOrNull { it.id == descriptor.msgId } ?: return
             MessageHeaderOverlay(
                 message = msg,
                 expanded = descriptor.expanded,
+                highlighted = descriptor.highlighted,
                 onToggle = { onToggleMessage(msg.id) }
             )
         }

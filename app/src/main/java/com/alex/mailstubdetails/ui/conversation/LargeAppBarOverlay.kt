@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -35,8 +37,13 @@ fun LargeAppBarOverlay(
     messageCount: Int,
     onBack: () -> Unit,
     onMore: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    hasPrev: Boolean = false,
+    hasNext: Boolean = false,
+    onPrev: () -> Unit = {},
+    onNext: () -> Unit = {}
 ) {
+    val showNav = messageCount > 1
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -56,6 +63,20 @@ fun LargeAppBarOverlay(
                 )
             }
             Spacer(Modifier.size(1.dp).weight(1f))
+            if (showNav) {
+                IconButton(onClick = onPrev, enabled = hasPrev) {
+                    Icon(
+                        imageVector = Icons.Default.KeyboardArrowUp,
+                        contentDescription = "Previous message"
+                    )
+                }
+                IconButton(onClick = onNext, enabled = hasNext) {
+                    Icon(
+                        imageVector = Icons.Default.KeyboardArrowDown,
+                        contentDescription = "Next message"
+                    )
+                }
+            }
             IconButton(onClick = onMore) {
                 Icon(Icons.Default.MoreVert, contentDescription = "More")
             }

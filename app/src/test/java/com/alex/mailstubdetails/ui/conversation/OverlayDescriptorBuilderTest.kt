@@ -161,4 +161,58 @@ class OverlayDescriptorBuilderTest {
         assertTrue(headers["a"]!!.expanded)
         assertTrue(!headers["b"]!!.expanded)
     }
+
+    // ─── Highlight ──────────────────────────────────────────────────────
+
+    @Test
+    fun `highlight applies to collapsed target header only`() {
+        val out = OverlayDescriptorBuilder.build(
+            thread = thread("a", "b", "c"),
+            expandedIds = setOf("a"),
+            loadedIds = emptySet(),
+            highlightedMsgId = "b"
+        )
+        val headers = out.filter { it.kind == OverlayKind.MESSAGE_HEADER }.associateBy { it.msgId }
+        assertTrue(headers["b"]!!.highlighted)
+        assertTrue(!headers["a"]!!.highlighted)
+        assertTrue(!headers["c"]!!.highlighted)
+    }
+
+    @Test
+    fun `highlight is suppressed when target message is expanded`() {
+        // Body is visible when expanded, so no header border is drawn —
+        // matches product decision 2026-08-28.
+        val out = OverlayDescriptorBuilder.build(
+            thread = thread("a", "b"),
+            expandedIds = setOf("b"),
+            loadedIds = setOf("b"),
+            highlightedMsgId = "b"
+        )
+        val headerB = out.first { it.kind == OverlayKind.MESSAGE_HEADER && it.msgId == "b" }
+        assertTrue(!headerB.highlighted)
+    }
+
+    @Test
+    fun `null highlightedMsgId leaves every header unhighlighted`() {
+        val out = OverlayDescriptorBuilder.build(
+            thread = thread("a", "b"),
+            expandedIds = emptySet(),
+            loadedIds = emptySet(),
+            highlightedMsgId = null
+        )
+        val headers = out.filter { it.kind == OverlayKind.MESSAGE_HEADER }
+        assertTrue(headers.none { it.highlighted })
+    }
+
+    @Test
+    fun `highlight does not leak onto app-bar or body or footer overlays`() {
+        val out = OverlayDescriptorBuilder.build(
+            thread = thread("a"),
+            expandedIds = setOf("a"),
+            loadedIds = emptySet(),
+            highlightedMsgId = "a"
+        )
+        val nonHeader = out.filter { it.kind != OverlayKind.MESSAGE_HEADER }
+        assertTrue(nonHeader.none { it.highlighted })
+    }
 }

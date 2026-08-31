@@ -25,10 +25,18 @@ object OverlayDescriptorBuilder {
 
     const val APP_BAR_ID: String = "app-bar"
 
+    /**
+     * @param highlightedMsgId Id of the message the user just jumped to via
+     *  the prev/next arrows in the app bar. The matching header descriptor
+     *  gets `highlighted = true` **only when the message is currently
+     *  collapsed** — when expanded, the body is visible so no separate
+     *  highlight is needed (per product decision 2026-08-28).
+     */
     fun build(
         thread: EmailThread,
         expandedIds: Set<String>,
-        loadedIds: Set<String>
+        loadedIds: Set<String>,
+        highlightedMsgId: String? = null
     ): List<OverlayDescriptor> {
         val list = ArrayList<OverlayDescriptor>(1 + thread.messages.size * 3)
         list += OverlayDescriptor(
@@ -44,7 +52,8 @@ object OverlayDescriptorBuilder {
                 id = "header:${msg.id}",
                 kind = OverlayKind.MESSAGE_HEADER,
                 msgId = msg.id,
-                expanded = expanded
+                expanded = expanded,
+                highlighted = msg.id == highlightedMsgId && !expanded
             )
             if (expanded && !loaded) {
                 list += OverlayDescriptor(

@@ -41,8 +41,37 @@ data class OverlayDescriptor(
     val id: String,
     val kind: OverlayKind,
     val msgId: String?,
-    val expanded: Boolean
+    val expanded: Boolean,
+    /**
+     * Transient "you just jumped here" flag driven by the prev/next arrows
+     * in the app bar. Only meaningful for [OverlayKind.MESSAGE_HEADER];
+     * ignored for other kinds. When flipped true, the overlay renders an
+     * animated border; auto-clears after ~1.5s in [ConversationScreen].
+     */
+    val highlighted: Boolean = false
 )
+
+/**
+ * Handle for imperatively driving a [ConversationView] from a parent
+ * composable — currently only used to trigger smooth scrolls when the user
+ * taps the prev/next arrows in the app bar. Obtain via
+ * [rememberConversationController]; pass to [ConversationView.controller].
+ *
+ * The controller is a thin wrapper around a nullable
+ * [ConversationContainer] ref — before the AndroidView's factory has run,
+ * or after `onRelease` has torn it down, all calls are no-ops.
+ */
+class ConversationController {
+    internal var container: ConversationContainer? = null
+
+    fun scrollToMessage(msgId: String) {
+        container?.scrollToMessage(msgId)
+    }
+}
+
+@Composable
+fun rememberConversationController(): ConversationController =
+    remember { ConversationController() }
 
 /**
  * Compose entry point for the AOSP-style conversation surface.
@@ -50,6 +79,19 @@ data class OverlayDescriptor(
  * The [overlayContent] slot is invoked once per descriptor; Phase C fills
  * this with `MessageHeaderOverlay`, `MessageFooterOverlay`, and the large
  * app bar. For now we ship a placeholder so B3 can be verified visually.
+ *
+ * @param highlightedMsgId    Transient "you just jumped here" marker set by
+ *   the screen when a prev/next arrow was tapped. Propagates into the
+ *   matching header descriptor's `highlighted` flag (see
+ *   [OverlayDescriptorBuilder.build]).
+ * @param focusThresholdPx    Device-px y coordinate the container uses to
+ *   decide which message is currently focused (typically the compact app
+ *   bar's height, so a header sliding under it becomes "current").
+ * @param onFocusedMessageChanged Fires the msgId of the topmost header at
+ *   or above [focusThresholdPx]. Null means no header has reached the
+ *   threshold yet — caller typically defaults to the first message.
+ * @param controller          Optional imperative handle for
+ *   [ConversationController.scrollToMessage].
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -58,16 +100,21 @@ fun ConversationView(
     expandedIds: Set<String>,
     loadedIds: Set<String>,
     modifier: Modifier = Modifier,
+    highlightedMsgId: String? = null,
+    focusThresholdPx: Int = 0,
     onScrollChanged: (scrollY: Int) -> Unit = {},
     onAppBarHeightChanged: (heightPx: Int) -> Unit = {},
+    onFocusedMessageChanged: (msgId: String?) -> Unit = {},
+    controller: ConversationController? = null,
     overlayContent: @Composable (OverlayDescriptor) -> Unit = { DefaultOverlayPlaceholder(it) }
 ) {
-    val descriptors = remember(thread, expandedIds, loadedIds) {
-        OverlayDescriptorBuilder.build(thread, expandedIds, loadedIds)
+    val descriptors = remember(thread, expandedIds, loadedIds, highlightedMsgId) {
+        OverlayDescriptorBuilder.build(thread, expandedIds, loadedIds, highlightedMsgId)
     }
     val latestOverlayContent = rememberUpdatedState(overlayContent)
     val latestOnScrollChanged = rememberUpdatedState(onScrollChanged)
     val latestOnAppBarHeightChanged = rememberUpdatedState(onAppBarHeightChanged)
+    val latestOnFocusedMessageChanged = rememberUpdatedState(onFocusedMessageChanged)
 
     // Bridge/state that survives across recompositions and is written from
     // the WebView binder thread via post { } to the main thread.
@@ -85,6 +132,9 @@ fun ConversationView(
             val container = ConversationContainer(ctx)
             container.onScrollChanged = { scrollY -> latestOnScrollChanged.value(scrollY) }
             container.onAppBarHeightChanged = { h -> latestOnAppBarHeightChanged.value(h) }
+            container.onFocusedMessageChanged = { id -> latestOnFocusedMessageChanged.value(id) }
+            container.focusThresholdPx = focusThresholdPx
+            controller?.container = container
 
             container.webView.addJavascriptInterface(
                 object {
@@ -113,6 +163,9 @@ fun ConversationView(
             container
         },
         update = { container ->
+            // Keep the container's focus threshold in sync — the screen can
+            // update it once the compact app bar is measured.
+            container.focusThresholdPx = focusThresholdPx
             // ── Overlay Views (get-or-create, keyed by descriptor id) ────
             val ctx = container.context
             val items: List<Pair<String, View>> = descriptors.map { d ->
@@ -148,6 +201,8 @@ fun ConversationView(
             // the "Bridge" JavascriptInterface holds strong references to
             // Compose state (BridgeState / caches), leaking the Activity
             // on every navigation.
+            if (controller?.container === container) controller.container = null
+            container.cancelPendingScroll()
             val webView = container.webView
             webView.stopLoading()
             webView.removeJavascriptInterface("Bridge")

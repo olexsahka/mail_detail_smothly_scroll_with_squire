@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -16,6 +18,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -35,6 +38,7 @@ import com.alex.mailstubdetails.ui.conversation.CompactBarThreshold
 import com.alex.mailstubdetails.ui.conversation.ConversationOverlaySlot
 import com.alex.mailstubdetails.ui.conversation.ConversationStateReducer
 import com.alex.mailstubdetails.ui.conversation.ConversationView
+import com.alex.mailstubdetails.ui.conversation.rememberConversationController
 
 // Fake body-fetch pacing. The jitter keeps repeated taps from feeling
 // mechanical (every load takes the same time = uncanny), and lets the
@@ -42,6 +46,11 @@ import com.alex.mailstubdetails.ui.conversation.ConversationView
 // snaps in.
 private const val FAKE_LOAD_DELAY_MS_MIN = 550L
 private const val FAKE_LOAD_DELAY_MS_JITTER = 350L
+
+// How long the primary-color highlight border stays visible after the user
+// taps a prev/next arrow. Matches the "flash and fade" pattern from Gmail —
+// long enough to notice, short enough not to feel sticky.
+private const val JUMP_HIGHLIGHT_DURATION_MS = 1500L
 
 /**
  * The AOSP-style conversation screen — replaces both the old
@@ -94,6 +103,38 @@ fun ConversationScreen(
         compactBarHeightPx = compactBarHeightPx
     )
 
+    // ── Prev/next navigation state ──────────────────────────────────────
+    // Currently-focused message = last header that has scrolled at or above
+    // the compact bar (container fires this on scroll/pinch). Defaults to
+    // the first message so prev/next work even before the first frame.
+    var focusedMsgId by remember(thread.id) {
+        mutableStateOf(thread.messages.first().id)
+    }
+    // Transient "you just jumped here" marker for the header border. Set on
+    // arrow tap, auto-cleared after JUMP_HIGHLIGHT_DURATION_MS.
+    var highlightedMsgId by remember(thread.id) { mutableStateOf<String?>(null) }
+    LaunchedEffect(highlightedMsgId, thread.id) {
+        if (highlightedMsgId != null) {
+            delay(JUMP_HIGHLIGHT_DURATION_MS)
+            highlightedMsgId = null
+        }
+    }
+
+    val controller = rememberConversationController()
+
+    val currentIndex = thread.messages.indexOfFirst { it.id == focusedMsgId }
+        .let { if (it < 0) 0 else it }
+    val hasPrev = currentIndex > 0
+    val hasNext = currentIndex in 0 until thread.messages.lastIndex
+
+    fun jumpTo(targetIndex: Int) {
+        val target = thread.messages.getOrNull(targetIndex) ?: return
+        controller.scrollToMessage(target.id)
+        highlightedMsgId = target.id
+    }
+    val onPrev: () -> Unit = { jumpTo(currentIndex - 1) }
+    val onNext: () -> Unit = { jumpTo(currentIndex + 1) }
+
     Scaffold { padding ->
         Box(
             modifier = Modifier
@@ -104,9 +145,13 @@ fun ConversationScreen(
                 thread = thread,
                 expandedIds = expandedIds,
                 loadedIds = loadedIds,
+                highlightedMsgId = highlightedMsgId,
+                focusThresholdPx = compactBarHeightPx,
                 modifier = Modifier.fillMaxSize(),
                 onScrollChanged = { scrollY = it },
                 onAppBarHeightChanged = { appBarHeightPx = it },
+                onFocusedMessageChanged = { id -> if (id != null) focusedMsgId = id },
+                controller = controller,
                 overlayContent = { descriptor ->
                     ConversationOverlaySlot(
                         descriptor = descriptor,
@@ -140,7 +185,11 @@ fun ConversationScreen(
                                     pendingLoads = done.pending
                                 }
                             }
-                        }
+                        },
+                        hasPrev = hasPrev,
+                        hasNext = hasNext,
+                        onPrev = onPrev,
+                        onNext = onNext
                     )
                 }
             )
@@ -154,7 +203,12 @@ fun ConversationScreen(
                 CompactAppBar(
                     subject = thread.subject,
                     onBack = onBack,
-                    onMore = {}
+                    onMore = {},
+                    hasPrev = hasPrev,
+                    hasNext = hasNext,
+                    onPrev = onPrev,
+                    onNext = onNext,
+                    showNav = thread.messageCount > 1
                 )
             }
         }
@@ -166,7 +220,12 @@ fun ConversationScreen(
 private fun CompactAppBar(
     subject: String,
     onBack: () -> Unit,
-    onMore: () -> Unit
+    onMore: () -> Unit,
+    hasPrev: Boolean,
+    hasNext: Boolean,
+    onPrev: () -> Unit,
+    onNext: () -> Unit,
+    showNav: Boolean
 ) {
     TopAppBar(
         title = {
@@ -182,6 +241,14 @@ private fun CompactAppBar(
             }
         },
         actions = {
+            if (showNav) {
+                IconButton(onClick = onPrev, enabled = hasPrev) {
+                    Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Previous message")
+                }
+                IconButton(onClick = onNext, enabled = hasNext) {
+                    Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Next message")
+                }
+            }
             IconButton(onClick = onMore) {
                 Icon(Icons.Default.MoreVert, contentDescription = "More")
             }
