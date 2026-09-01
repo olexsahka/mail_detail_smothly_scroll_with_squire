@@ -6,6 +6,7 @@ data class EmailMessage(
     val fromEmail: String,
     val toList: List<String>,
     val ccList: List<String> = emptyList(),
+    val bccList: List<String> = emptyList(),
     val subject: String,
     val date: String,
     val htmlBody: String,

@@ -126,6 +126,29 @@ override fun onPageFinished(view: WebView, url: String?) {
 
 Cache `initialScale` — the density-only baseline. Pure pinch factor is `currentScale / initialScale`.
 
+### 2.7 Long DOM-affecting animations live in CSS, not in Compose
+
+Any animation that changes the height/width of a DOM element and needs to shift HTML content below (message header details expand, message body expand/collapse, etc.) belongs in a CSS transition on the browser side, NOT in a Compose `AnimatedVisibility` / `animateContentSize` on the overlay side.
+
+**Why Compose loses.** Compose size animation remeasures the overlay each frame. At 60 fps × 220 ms that's ~13 `evaluateJavascript` bridge calls to push the new spacer height, each triggering a full browser reflow. The bridge is async, so the DOM lags the Compose overlay by 1–2 frames on every one of those pushes. Symptom: visible jerk on the header/footer of the *next* message in the thread while your target message is expanding.
+
+**How CSS wins.**
+
+1. Compose overlay content mounts/unmounts in **one** frame (no enter/exit transition).
+2. Overlay `measuredHeight` jumps → `ConversationContainer.pushSpacerHeights` sends **one** `setSpacerHeight` call.
+3. JS detects a "significant" change (`|new − old| ≥ 20 CSS px` + `oldHeight > 0` to skip first render / pinch drift), adds an `.animating-height` class on the spacer, sets the target height inline. The CSS transition on `.animating-height` animates the actual layout shift in the browser.
+4. A bounded `requestAnimationFrame` pump inside JS calls `measurePositions()` every frame until `transitionend`. This keeps native positioning of *other* overlays (chained neighbours, body content, next message's header) in sync with the CSS transition — otherwise they'd freeze at pre-animation geometry until the transition finished.
+
+**Reversal (mid-animation re-toggle).** If the user re-toggles while an animation is running, freeze the current transitioning height (`getComputedStyle(el).height`) as the start point for the new direction. Don't reset to auto or the old target — the visible height will snap, then re-animate from a mismatched position.
+
+**Where the overlay's background matters.** Overlay Compose height jumps to final size instantly, but the DOM below takes 220–240 ms to slide down (or up). During that window the overlay's bottom overlaps content that hasn't moved yet. Give the overlay an opaque `surface`-colour background — the overlap then looks like normal layout instead of a visual glitch. Overlays without an opaque background will show ghost content underneath during animation.
+
+**When NOT to use this pattern.**
+- One-shot animations that fire before the user can see them (e.g., fixLayout applying `transform: scale` on a table during the first render of a message body).
+- Animations that don't affect layout (opacity / colour / border) — those are Compose-native, GPU-accelerated, and stay far away from the bridge.
+- Native `visualViewport` transient reactions (pinch scroll deltas) — those should be handled without any DOM writes, see §2.5.
+- **Elements with heavy content subtrees.** CSS `transition: height` works on *empty* spacer divs (the header/footer overlay zones — one number to interpolate, one empty box to reflow). It does NOT work on a message body which owns a full sanitized HTML subtree (tables, images, scale-wrapped children). Every frame the browser reflows the whole subtree, clips content via `overflow: hidden`, recomputes document `scrollHeight` for the scrollbar, and may re-fire fixLayout via queued image-load listeners. `height` is not a compositor-only property, `contain: layout` only isolates *internal* propagation (siblings still move), and `will-change: height` is a no-op because layout isn't accelerated. Result: the animation itself drops frames on any real content, which visually reads as "freezing/stuttering". Snap heavy elements. If you need polish, animate an empty spacer around them or a lightweight overlay indicator — not the content wrapper itself.
+
 ---
 
 ## 3. Wide-content down-scaling (fixLayout-style)
@@ -268,6 +291,10 @@ Symptoms → likely cause → fix.
 
 **Every image in the body loads then the layout "jitters" once.** That's the expected first-pass → image-load → re-layout cycle. If it happens more than once per image, you're attaching duplicate `load` listeners on repeated `formatMessageBody` calls (see §3.6).
 
+**Message body expand/collapse animation stutters or "freezes" mid-way.** You're transitioning `height` on a content-heavy element (body with tables/images/wrapped children). Every frame the browser reflows the whole subtree and recomputes document scroll height; the transition itself drops frames. Snap the body insert/remove and only animate the empty header/footer spacer siblings via the CSS pattern in §2.7. If the header spacer transitions cleanly and the body one doesn't, you've hit the "not-for-heavy-content" caveat — see the last bullet of §2.7 "When NOT to use this pattern".
+
+**Content flashes to full height and then animates smoothly** on a mid-animation reverse toggle (user tapped again before the first animation finished). Reversal path is resetting the inline `height` before starting the new animation instead of freezing at the current transitioning value. Read `getComputedStyle(el).height` at the freeze point, set it as the inline height, then start the new transition (see §2.7 "Reversal").
+
 ---
 
 ## 6. Potential further improvements
@@ -313,6 +340,18 @@ For pixel-precise overlay alignment, call `scheduleMeasure()` after `document.fo
 ### 6.10 Testable pure-Kotlin logic layers
 
 Anything that's math (overlay layout, compact bar threshold, page-top prediction, template building, state reduction) — extract to a pure Kotlin object with no Android/View dependencies and unit-test it. The reference project has separate `*Math.kt` files for each. This is where regressions hide; UI tests won't catch a scale-arithmetic bug that happens 2 frames into a pinch.
+
+### 6.11 Native-side animation for heavy content when snap feels too abrupt
+
+CSS `transition: height` on a body-sized element stutters (§2.7 caveat). Snap works but the layout jump on expand/collapse is visible. If that jump is unacceptable, animate on the *native* side instead of the browser side:
+
+- Snap the DOM change (body insert/remove) so document reflow is one-shot, cheap, and off the critical path.
+- On native, capture the affected overlays' `translationY` values BEFORE the snap (from the pre-snap geometry) and AFTER the snap (from the post-snap geometry).
+- Run an `ObjectAnimator` / Compose `Animatable` on each overlay's `translationY` from old to new — 200-240 ms, same easing as your other UI. Native animations run on Android's Choreographer and are GPU-composited on the RenderThread, they don't fight the WebView main thread.
+
+Trade-off: the WebView content beneath the overlay moves instantly (snap); only the overlays glide. Users read this as "the app placed the content, the interactive buttons slid to their new positions" — a familiar pattern from Gmail and Outlook. The DOM stays consistent throughout, so pinch/scroll behave normally.
+
+Do this only if snap actually shows up in feedback. It's ~50 lines of Kotlin plus a hook to grab pre-snap geometry — not free effort, and users usually accept snap for content-heavy reveals.
 
 ---
 

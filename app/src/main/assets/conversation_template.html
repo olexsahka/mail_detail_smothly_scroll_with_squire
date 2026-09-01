@@ -23,6 +23,30 @@
         .msg-header-spacer  { height: 64px; }
         .msg-footer-spacer  { height: 48px; }
 
+        /* Height transitions for intentional expand/collapse (header details
+           toggle, etc). Applied by JS via .animating-height class ONLY for
+           significant, user-initiated changes — never on first render, pinch
+           reflow, or small measurement drift, which would flicker. */
+        /* cubic-bezier(0, 0, 0.2, 1) = Material's LinearOutSlowIn — same
+           curve the chevron rotation uses in Compose, so both animations
+           feel synchronised. `contain: layout` scopes the per-frame
+           reflow to the spacer element. `will-change: height` primes the
+           compositor. */
+        .msg-header-spacer.animating-height,
+        .msg-footer-spacer.animating-height {
+            transition: height 220ms cubic-bezier(0, 0, 0.2, 1);
+            contain: layout;
+            will-change: height;
+        }
+
+        /* Note: no CSS transition on `.msg-body` height. Bodies are content-
+           heavy (sanitized HTML, tables, images, scale wrapper) — a per-frame
+           `height` reflow drops frames of the transition itself on real
+           threads. `toggleExpanded()` therefore snaps body insert/remove and
+           relies on the header/footer spacer transitions above to smooth
+           out just the header details expander. See conversation.js
+           `toggleExpanded`. */
+
         /* Faint outline while debugging; remove for release */
         .debug-spacers .app-bar-spacer,
         .debug-spacers .msg-header-spacer,

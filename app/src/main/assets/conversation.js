@@ -172,6 +172,25 @@
         }
     }
 
+    // Body expand/collapse is a SNAP, deliberately not a CSS transition.
+    //
+    // We tried transitioning `.msg-body { height }` and it stuttered visibly
+    // on threads with any real content. Reason: a message body owns a full
+    // sanitized HTML subtree (tables, images, .mail-scale-wrapper with
+    // possible zoom, sanitized paragraphs). Each animation frame the browser:
+    //   • reflows the entire body subtree (contain: layout only isolates
+    //     internal propagation — siblings & document scroll height still
+    //     recompute),
+    //   • clips content via overflow: hidden (paint cost proportional to
+    //     body width × delta height),
+    //   • may re-fire fixLayout via queued image-load listeners.
+    // Neither height nor overflow are compositor-only properties, so this
+    // all lands on the browser main thread. On heavy bodies the transition
+    // itself drops frames — which reads as "the animation freezes".
+    //
+    // Header details expand/collapse stays animated (see animateSpacerHeight)
+    // because those spacers are empty divs — animating their height is one
+    // reflow of one empty box per frame, cheap enough.
     function toggleExpanded(msgId) {
         var msg = messagesById[msgId];
         if (!msg) return;
@@ -184,8 +203,6 @@
         header.dataset.expanded = String(msg.expanded);
 
         if (msg.expanded) {
-            // Insert body (skeleton if not loaded yet) + footer immediately
-            // after the header spacer.
             var body = buildBody(msg);
 
             var footer = document.createElement('div');
@@ -199,10 +216,7 @@
             parent.insertBefore(footer, body.nextSibling);
 
             if (msg.loaded && typeof window.formatMessageBody === 'function') {
-                // fixLayout schedules its own measure once layout settles;
-                // don't fire a second scheduleMeasure here — the first would
-                // report pre-scaled geometry and overlays would jump when
-                // the fixLayout pass lands.
+                // fixLayout will scheduleMeasure once its layout pass settles.
                 window.formatMessageBody(body);
             } else {
                 scheduleMeasure();
@@ -268,11 +282,74 @@
     // content flicker. Instead, native takes care of visually collapsing
     // the per-spacer pinch overshoot via a chain-walk in positionOverlays()
     // — see ConversationContainer.kt.
+    //
+    // Smooth intentional expand/collapse: when the pushed height differs from
+    // the current one by more than a small drift threshold (i.e., the user
+    // opened the "details" chevron on a message header, not just a pinch
+    // adjustment), we hand the animation off to the browser via a CSS
+    // `transition: height` class. This is dramatically smoother than trying
+    // to animate on the Compose side (which would push 13 evaluateJavascript
+    // calls at 60 fps over 220ms — each one triggering a full reflow and
+    // fighting the bridge latency). Compose overlay jumps to final height
+    // instantly; only body content beneath the spacer animates.
+    var HEIGHT_ANIMATE_THRESHOLD_PX = 20;
+    var HEIGHT_ANIMATE_DURATION_MS = 220;
+
     function setSpacerHeight(overlayId, cssPx) {
         var el = document.querySelector('[data-overlay="' + overlayId + '"]');
         if (!el) return;
+
+        var oldHeight = parseFloat(el.style.height) || 0;
+        var isHeaderOrFooter = /^(header|footer):/.test(overlayId);
+        var significantChange = oldHeight > 0
+            && Math.abs(cssPx - oldHeight) >= HEIGHT_ANIMATE_THRESHOLD_PX;
+
+        if (isHeaderOrFooter && significantChange) {
+            animateSpacerHeight(el, cssPx);
+        } else {
+            el.style.height = cssPx + 'px';
+            scheduleMeasure();
+        }
+    }
+
+    // Enable CSS transition on this spacer, set the target height, then keep
+    // measurePositions() flowing until the transition ends so native
+    // positioning of *other* overlays (chained neighbours, body-below)
+    // tracks the animation smoothly instead of freezing at pre-animation
+    // geometry.
+    //
+    // We drive updates via scheduleMeasure() (not direct measurePositions
+    // per frame) so the built-in double-rAF coalescing throttles the actual
+    // work to ~30 fps effective. At 60 fps we hammered the main thread with
+    // getBoundingClientRect + JSON + IPC every frame → CSS transition
+    // started dropping frames of its own, and the animation looked frozen.
+    function animateSpacerHeight(el, cssPx) {
+        el.classList.add('animating-height');
         el.style.height = cssPx + 'px';
-        scheduleMeasure();
+
+        var deadlineTs = performance.now() + HEIGHT_ANIMATE_DURATION_MS + 80;
+        var stopped = false;
+
+        function tick() {
+            if (stopped) return;
+            scheduleMeasure();
+            if (performance.now() < deadlineTs) {
+                requestAnimationFrame(tick);
+            }
+        }
+        requestAnimationFrame(tick);
+
+        // transitionend is authoritative — if it fires early (e.g., browser
+        // decided to snap), stop the rAF pump; if it never fires (spacer
+        // detached mid-animation), the deadlineTs fallback still stops us.
+        function onEnd(ev) {
+            if (ev.propertyName !== 'height') return;
+            el.removeEventListener('transitionend', onEnd);
+            el.classList.remove('animating-height');
+            stopped = true;
+            scheduleMeasure();
+        }
+        el.addEventListener('transitionend', onEnd);
     }
 
     /* ── Measure & report ──────────────────────────────────────────────── */

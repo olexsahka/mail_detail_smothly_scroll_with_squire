@@ -773,18 +773,23 @@ val MOCK_THREADS: List<EmailThread> = listOf(
                 id = "msg_fix_5a",
                 fromName = "fixLayout QA",
                 fromEmail = "qa@mailstubdetails.local",
-                toList = listOf("alex@mailstubdetails.com"),
+                toList = listOf("alex@mailstubdetails.com", "team@mailstubdetails.local"),
+                ccList = listOf("qa-observers@mailstubdetails.local"),
+                bccList = listOf("archive-bot@mailstubdetails.local"),
                 subject = "[TEST 5] Multi-message chain (preloaded + 2 lazy)",
                 date = "Nov 5, 9:40 AM",
                 htmlBody = BODY_FIX_CHAIN_INTRO,
                 plainPreview = "First message is preloaded + pre-expanded — verifies appendMessage triggers formatMessageBody (fix #1).",
-                isRead = false
+                isRead = false,
+                hasAttachment = true
             ),
             EmailMessage(
                 id = "msg_fix_5b",
                 fromName = "fixLayout QA",
                 fromEmail = "qa@mailstubdetails.local",
                 toList = listOf("alex@mailstubdetails.com"),
+                ccList = listOf("designer@mailstubdetails.local", "reviewer@mailstubdetails.local"),
+                bccList = listOf("manager@mailstubdetails.local"),
                 subject = "Re: [TEST 5] Multi-message chain",
                 date = "Nov 5, 9:45 AM",
                 htmlBody = BODY_FIX_CHAIN_IMAGES,
@@ -796,10 +801,95 @@ val MOCK_THREADS: List<EmailThread> = listOf(
                 fromName = "fixLayout QA",
                 fromEmail = "qa@mailstubdetails.local",
                 toList = listOf("alex@mailstubdetails.com"),
+                ccList = listOf("qa-observers@mailstubdetails.local"),
+                bccList = listOf("auditor@mailstubdetails.local", "logger@mailstubdetails.local"),
                 subject = "Re: [TEST 5] Multi-message chain",
                 date = "Nov 5, 9:50 AM",
                 htmlBody = BODY_FIX_CHAIN_HUGE,
                 plainPreview = "Lazy-loaded third message: huge table. Verifies scroll fallback works after lazy load, not just at initial render.",
+                isRead = false
+            )
+        )
+    ),
+
+    // ─── Header details expand/collapse test ────────────────────────────────
+    // Focused test for the To/Cc/Bcc/Date expander in MessageHeaderOverlay.
+    // Long recipient lists on purpose so the expanded block visibly grows and
+    // you can see whether the spacer sync stays smooth as it animates.
+    EmailThread(
+        id = "thread_details_1",
+        subject = "[TEST 6] Header details expander (To/Cc/Bcc)",
+        messages = listOf(
+            EmailMessage(
+                id = "msg_det_1a",
+                fromName = "Product Ops",
+                fromEmail = "product-ops@mailstubdetails.local",
+                toList = listOf(
+                    "alex@mailstubdetails.com",
+                    "engineering-leads@mailstubdetails.local",
+                    "design-team@mailstubdetails.local"
+                ),
+                ccList = listOf(
+                    "vp-product@mailstubdetails.local",
+                    "vp-engineering@mailstubdetails.local",
+                    "chief-of-staff@mailstubdetails.local"
+                ),
+                bccList = listOf(
+                    "legal-review@mailstubdetails.local",
+                    "compliance-archive@mailstubdetails.local"
+                ),
+                subject = "[TEST 6] Header details expander (To/Cc/Bcc)",
+                date = "Nov 6, 10:15 AM",
+                htmlBody = """
+                    <div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#202124;">
+                      <p><strong>Тест раскрытия деталей письма.</strong></p>
+                      <p>Раскрой это сообщение (тап по хедеру). Справа от даты появится маленькая иконка ▼ — тапни по ней. Плавно, за ~220&nbsp;мс, раскроется блок с полями <code>from</code>, <code>to</code>, <code>cc</code>, <code>bcc</code>, <code>date</code>.</p>
+                      <p>Проверить:</p>
+                      <ul>
+                        <li>Хедер плавно "растёт" вниз, HTML-контент под ним съезжает вниз синхронно (без ступенек, gap'ов, overlap с телом письма).</li>
+                        <li>Иконка ▼ плавно поворачивается на 180°.</li>
+                        <li>Обратный тап — плавное закрытие за ~180&nbsp;мс.</li>
+                        <li>Клик по иконке НЕ сворачивает тело письма (два разных clickable).</li>
+                        <li>Если поверх пинчить (zoom) — оверлей хедера НЕ должен ломаться, только раскрытие/закрытие должно быть плавным. Промежуточные кадры анимации не пушатся в JS каждый (кэш <code>lastSentSpacerCssPx</code>), но CSS-px-переходы всё же уходят на JS-мост.</li>
+                      </ul>
+                      <p>Тело письма специально короткое — фокус на анимации хедера, не на контенте.</p>
+                    </div>
+                """.trimIndent(),
+                plainPreview = "Test recipient list expander: To/Cc/Bcc with 3+3+2 addresses. Tap the row, then the chevron next to the date.",
+                isRead = false,
+                hasAttachment = true
+            ),
+            EmailMessage(
+                id = "msg_det_1b",
+                fromName = "Alex",
+                fromEmail = "alex@mailstubdetails.com",
+                toList = listOf("product-ops@mailstubdetails.local"),
+                ccList = listOf("engineering-leads@mailstubdetails.local"),
+                subject = "Re: [TEST 6] Header details expander (To/Cc/Bcc)",
+                date = "Nov 6, 10:32 AM",
+                htmlBody = """
+                    <div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#202124;">
+                      <p>Второе сообщение — с более коротким набором получателей (только to + cc, bcc нет).</p>
+                      <p>Проверить, что при раскрытии деталей блок <strong>bcc</strong> НЕ рисуется вовсе (не пустая строка "bcc: —", а именно отсутствие ряда), и размер блока меньше, чем у первого сообщения.</p>
+                    </div>
+                """.trimIndent(),
+                plainPreview = "Reply — shorter recipient set: to + cc only, no bcc. Check that the bcc row is absent, not empty.",
+                isRead = false
+            ),
+            EmailMessage(
+                id = "msg_det_1c",
+                fromName = "Product Ops",
+                fromEmail = "product-ops@mailstubdetails.local",
+                toList = listOf("alex@mailstubdetails.com"),
+                subject = "Re: [TEST 6] Header details expander (To/Cc/Bcc)",
+                date = "Nov 6, 11:04 AM",
+                htmlBody = """
+                    <div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#202124;">
+                      <p>Третье сообщение — самый минимум: только <strong>to</strong> одному адресату.</p>
+                      <p>При раскрытии деталей должны быть видны только <code>from</code>, <code>to</code>, <code>date</code>. Минимальная возможная высота блока.</p>
+                    </div>
+                """.trimIndent(),
+                plainPreview = "Minimum case: to a single recipient, no cc/bcc/attachment.",
                 isRead = false
             )
         )
