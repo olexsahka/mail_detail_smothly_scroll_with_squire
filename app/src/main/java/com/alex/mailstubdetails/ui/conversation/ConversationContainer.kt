@@ -203,18 +203,21 @@ class ConversationContainer @JvmOverloads constructor(
     /**
      * Current best estimate of `visualViewport.pageTop` in CSS px.
      *
-     * Two sources feed this field:
-     *  1. JS `onViewport(scale, pageTopCss)` — **atomic** snapshot of the
-     *     compositor state. This is the only correct value during pinch,
-     *     when `bridgeScale` is also changing per frame.
-     *  2. Native `scrollListener` — predicts `pageTopCss = scrollY /
-     *     effectiveScale` from the freshly-updated native `scrollY`.
-     *     Used when **not** pinching so the value doesn't lag by 1 frame
-     *     while the compositor scrolls between JS reports.
+     * Split ownership by gesture phase — the two writers never race:
+     *  1. **Pinch active** → JS `onViewport(scale, pageTopCss)` owns the
+     *     field. It's the only correct value while `bridgeScale` is
+     *     changing per frame, since scale and pageTop must be applied
+     *     atomically from the same compositor snapshot.
+     *  2. **Not pinching** → native `scrollListener` owns the field via
+     *     `pageTopCss = scrollY / effectiveScale`. JS visualViewport
+     *     events are ignored for pageTop in this phase — they arrive
+     *     via `post {}` and lag native `onScrollChanged` by a frame, so
+     *     accepting them re-introduced a few-px overlay jitter every
+     *     kadr (most visible on the LargeAppBar at topCss=0, where any
+     *     error in offset lands directly in translationY).
      *
-     * Both writers hit the main thread, so last-write-wins per frame.
-     * We guard prediction behind `!pinchActive` so we never overwrite the
-     * atomic JS snapshot with a stale-scale prediction mid-pinch.
+     * `onViewportUpdate` still writes the field when scale changes without
+     * an active pinch (double-tap zoom, first paint) — see its KDoc.
      */
     private var bridgePageTopCss: Float = 0f
 
@@ -347,12 +350,34 @@ class ConversationContainer @JvmOverloads constructor(
      * Runs on the WebView's binder thread; posts to the UI thread and
      * repositions overlays synchronously so they track the DOM without
      * waiting for the sparse `WebViewClient.onScaleChanged` callback.
+     *
+     * `pageTopCss` is trusted only during an active pinch (atomic
+     * `(scale, pageTop)` snapshot from the compositor). Outside pinch,
+     * this callback arrives via `post {}` and lags the native
+     * `onScrollChanged` prediction by a frame, so accepting it would
+     * overwrite the fresh prediction with a stale value and produce a
+     * few-px per-frame overlay jitter (most visible on the LargeAppBar
+     * at topCss=0). `bridgeScale` is always updated so pinch state stays
+     * accurate for the native prediction path.
      */
     fun onViewportUpdate(scale: Float, pageTopCss: Float) {
         post {
+            val scaleChanged = scale != bridgeScale
             bridgeScale = scale
-            bridgePageTopCss = pageTopCss
             bridgeHasValue = true
+            when {
+                pinchActive -> bridgePageTopCss = pageTopCss
+                scaleChanged -> {
+                    // Scale changed without an active pinch (double-tap zoom
+                    // or first-paint density scale). Re-anchor pageTop to the
+                    // current native scrollY at the new scale so we don't
+                    // carry over a stale prediction computed at the old scale.
+                    BridgePageTopMath.predict(webView.scrollY, scale, webView.initialScale)
+                        ?.let { bridgePageTopCss = it }
+                }
+                // else: pure scroll report — native scrollListener already
+                // keeps bridgePageTopCss fresh; ignoring JS avoids the race.
+            }
             positionOverlays()
         }
     }

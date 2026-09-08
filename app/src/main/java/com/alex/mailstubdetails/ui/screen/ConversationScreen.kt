@@ -1,8 +1,9 @@
 package com.alex.mailstubdetails.ui.screen
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -197,8 +198,15 @@ fun ConversationScreen(
             AnimatedVisibility(
                 visible = showCompact,
                 modifier = Modifier.align(Alignment.TopCenter),
-                enter = slideInVertically(initialOffsetY = { -it }),
-                exit = slideOutVertically(targetOffsetY = { -it })
+                // Cross-fade rather than slide: the compact bar is drawn on
+                // top of the LargeAppBarOverlay, so a slide-out animation
+                // kept the compact bar covering the top ~64dp of the large
+                // bar for the whole exit — the expanded bar looked like it
+                // "appeared late". Fading lets the large bar bleed through
+                // during the handoff instead of waiting for the compact
+                // bar to translate off-screen.
+                enter = fadeIn(animationSpec = tween(durationMillis = 180)),
+                exit = fadeOut(animationSpec = tween(durationMillis = 180))
             ) {
                 CompactAppBar(
                     subject = thread.subject,
