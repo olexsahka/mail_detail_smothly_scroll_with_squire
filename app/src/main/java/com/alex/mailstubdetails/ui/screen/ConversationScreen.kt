@@ -1,9 +1,5 @@
 package com.alex.mailstubdetails.ui.screen
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -31,11 +27,13 @@ import kotlinx.coroutines.launch
 import kotlin.random.Random
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.alex.mailstubdetails.model.EmailThread
-import com.alex.mailstubdetails.ui.conversation.CompactBarThreshold
+import com.alex.mailstubdetails.ui.conversation.AppBarTitleFadeProgress
 import com.alex.mailstubdetails.ui.conversation.ConversationOverlaySlot
 import com.alex.mailstubdetails.ui.conversation.ConversationStateReducer
 import com.alex.mailstubdetails.ui.conversation.ConversationView
@@ -53,19 +51,29 @@ private const val FAKE_LOAD_DELAY_MS_JITTER = 350L
 // long enough to notice, short enough not to feel sticky.
 private const val JUMP_HIGHLIGHT_DURATION_MS = 1500L
 
+// Vertical distance the pinned title slides while fading in — chosen to
+// look like it rises "from under the bar" without covering the icons.
+// Value in dp so it stays constant on all densities.
+private val TITLE_SLIDE_DISTANCE = 12.dp
+
 /**
- * The AOSP-style conversation screen — replaces both the old
- * `MessageDetailScreen` (N=1) and `ThreadScreen` (N>1). Layout:
+ * The AOSP-style conversation screen. Layout:
  *
  * ```
  *  Scaffold (system-bar insets)
  *   └ Box
- *      ├ ConversationView                            (fills)
- *      └ AnimatedVisibility(showCompact) CompactBar  (overlays top)
+ *      ├ ConversationView                 (fills)
+ *      └ CompactAppBar (statically pinned, subject fades in on scroll)
  * ```
  *
- * The compact bar overlays inside the Box rather than sitting in
- * Scaffold.topBar so its slide-in/out never reflows the WebView.
+ * The pinned bar sits inside the Box (not `Scaffold.topBar`) so it always
+ * paints on top of `LargeAppBarOverlay` without reflowing the WebView. At
+ * scrollY = 0 the pinned bar covers the hero overlay's own icons exactly —
+ * they're intentionally duplicated so a fresh scroll never reveals a bare
+ * top edge, and the visual is a single icon row. Only the subject text
+ * cross-fades in as the hero subject travels under the pinned bar (see
+ * [AppBarTitleFadeProgress]). The bar's height is measured at layout time
+ * — no Material3 spec constants baked in.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -90,18 +98,25 @@ fun ConversationScreen(
     val loadScope = rememberCoroutineScope()
 
     var scrollY by remember { mutableIntStateOf(0) }
-    var appBarHeightPx by remember { mutableIntStateOf(0) }
+    // Subject Text top / bottom Y offset in device px, relative to top of
+    // the hero overlay — reported by
+    // `LargeAppBarOverlay.onSubjectBoundsChanged`. The two edges define the
+    // scroll range over which the pinned title cross-fades in.
+    var heroSubjectTopPx by remember(thread.id) { mutableIntStateOf(0) }
+    var heroSubjectBottomPx by remember(thread.id) { mutableIntStateOf(0) }
 
-    // Compact bar appears when the large bar has scrolled such that only
-    // compact-bar-worth of it remains visible. largeH is the measured
-    // app-bar overlay height reported by the container; compactH is
-    // Material3's TopAppBar height (64dp).
-    val density = LocalDensity.current
-    val compactBarHeightPx = with(density) { 64.dp.toPx().toInt() }
-    val showCompact = CompactBarThreshold.shouldShowCompact(
+    // Measured height of the pinned bar (device px). Fires once at layout
+    // and on configuration changes — not per frame — so no impact on
+    // scroll smoothness. Feeds both the focus threshold (header sliding
+    // under the bar becomes "current") and the subject-fade rule (bar's
+    // bottom edge = fade completion line). Zero before the first layout;
+    // callers are all safe against a zero value.
+    var staticBarHeightPx by remember { mutableIntStateOf(0) }
+    val titleFadeProgress = AppBarTitleFadeProgress.progress(
         scrollYPx = scrollY,
-        appBarHeightPx = appBarHeightPx,
-        compactBarHeightPx = compactBarHeightPx
+        heroSubjectTopPx = heroSubjectTopPx,
+        heroSubjectBottomPx = heroSubjectBottomPx,
+        staticBarHeightPx = staticBarHeightPx
     )
 
     // ── Prev/next navigation state ──────────────────────────────────────
@@ -147,10 +162,9 @@ fun ConversationScreen(
                 expandedIds = expandedIds,
                 loadedIds = loadedIds,
                 highlightedMsgId = highlightedMsgId,
-                focusThresholdPx = compactBarHeightPx,
+                focusThresholdPx = staticBarHeightPx,
                 modifier = Modifier.fillMaxSize(),
                 onScrollChanged = { scrollY = it },
-                onAppBarHeightChanged = { appBarHeightPx = it },
                 onFocusedMessageChanged = { id -> if (id != null) focusedMsgId = id },
                 controller = controller,
                 overlayContent = { descriptor ->
@@ -190,35 +204,29 @@ fun ConversationScreen(
                         hasPrev = hasPrev,
                         hasNext = hasNext,
                         onPrev = onPrev,
-                        onNext = onNext
+                        onNext = onNext,
+                        onHeroSubjectBoundsChanged = { top, bottom ->
+                            heroSubjectTopPx = top
+                            heroSubjectBottomPx = bottom
+                        }
                     )
                 }
             )
 
-            AnimatedVisibility(
-                visible = showCompact,
-                modifier = Modifier.align(Alignment.TopCenter),
-                // Cross-fade rather than slide: the compact bar is drawn on
-                // top of the LargeAppBarOverlay, so a slide-out animation
-                // kept the compact bar covering the top ~64dp of the large
-                // bar for the whole exit — the expanded bar looked like it
-                // "appeared late". Fading lets the large bar bleed through
-                // during the handoff instead of waiting for the compact
-                // bar to translate off-screen.
-                enter = fadeIn(animationSpec = tween(durationMillis = 180)),
-                exit = fadeOut(animationSpec = tween(durationMillis = 180))
-            ) {
-                CompactAppBar(
-                    subject = thread.subject,
-                    onBack = onBack,
-                    onMore = {},
-                    hasPrev = hasPrev,
-                    hasNext = hasNext,
-                    onPrev = onPrev,
-                    onNext = onNext,
-                    showNav = thread.messageCount > 1
-                )
-            }
+            CompactAppBar(
+                subject = thread.subject,
+                titleFadeProgress = titleFadeProgress,
+                onBack = onBack,
+                onMore = {},
+                hasPrev = hasPrev,
+                hasNext = hasNext,
+                onPrev = onPrev,
+                onNext = onNext,
+                showNav = thread.messageCount > 1,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .onSizeChanged { staticBarHeightPx = it.height }
+            )
         }
     }
 }
@@ -227,20 +235,38 @@ fun ConversationScreen(
 @Composable
 private fun CompactAppBar(
     subject: String,
+    titleFadeProgress: Float,
     onBack: () -> Unit,
     onMore: () -> Unit,
     hasPrev: Boolean,
     hasNext: Boolean,
     onPrev: () -> Unit,
     onNext: () -> Unit,
-    showNav: Boolean
+    showNav: Boolean,
+    modifier: Modifier = Modifier
 ) {
     TopAppBar(
+        modifier = modifier,
         title = {
+            // Scroll-linked cross-fade of the subject. `progress` is
+            // exactly the fraction of the hero subject that has already
+            // slid under the bar (see [AppBarTitleFadeProgress]) — so as
+            // the last pixel of the hero title leaves the viewport, the
+            // pinned title has just reached full opacity and its natural
+            // position. `translationYPx` in `graphicsLayer` moves *paint
+            // only* (no relayout), so we can drive it every frame without
+            // causing measurement churn in the toolbar.
+            val translationYPx = with(LocalDensity.current) {
+                TITLE_SLIDE_DISTANCE.toPx()
+            } * (1f - titleFadeProgress)
             Text(
                 text = subject,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.graphicsLayer {
+                    alpha = titleFadeProgress
+                    translationY = translationYPx
+                }
             )
         },
         navigationIcon = {

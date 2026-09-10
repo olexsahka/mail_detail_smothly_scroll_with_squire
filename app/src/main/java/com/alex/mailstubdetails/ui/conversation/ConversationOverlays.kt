@@ -27,7 +27,8 @@ fun ConversationOverlaySlot(
     hasPrev: Boolean = false,
     hasNext: Boolean = false,
     onPrev: () -> Unit = {},
-    onNext: () -> Unit = {}
+    onNext: () -> Unit = {},
+    onHeroSubjectBoundsChanged: (topPx: Int, bottomPx: Int) -> Unit = { _, _ -> }
 ) {
     when (descriptor.kind) {
         OverlayKind.APP_BAR -> LargeAppBarOverlay(
@@ -38,7 +39,8 @@ fun ConversationOverlaySlot(
             hasPrev = hasPrev,
             hasNext = hasNext,
             onPrev = onPrev,
-            onNext = onNext
+            onNext = onNext,
+            onSubjectBoundsChanged = onHeroSubjectBoundsChanged
         )
         OverlayKind.MESSAGE_HEADER -> {
             val msg = thread.messages.firstOrNull { it.id == descriptor.msgId } ?: return
