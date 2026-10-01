@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -22,6 +23,9 @@ import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.alex.mailstubdetails.model.EmailThread
+import com.alex.mailstubdetails.perf.LocalPerfCollector
+import com.alex.mailstubdetails.perf.PerfCollector
+import com.alex.mailstubdetails.perf.PerfKeys
 
 /* ── Public API surface for overlays (consumed by Phase C) ─────────────── */
 
@@ -115,6 +119,14 @@ fun ConversationView(
     val latestOnScrollChanged = rememberUpdatedState(onScrollChanged)
     val latestOnAppBarHeightChanged = rememberUpdatedState(onAppBarHeightChanged)
     val latestOnFocusedMessageChanged = rememberUpdatedState(onFocusedMessageChanged)
+    val perfCollector = LocalPerfCollector.current
+    val latestPerfCollector = rememberUpdatedState(perfCollector)
+    // Reset the "gesture" state tag when this ConversationView leaves
+    // composition — otherwise the last gesture from the previous thread
+    // would keep tagging frames on the inbox.
+    DisposableEffect(perfCollector) {
+        onDispose { perfCollector?.removeState(PerfKeys.GESTURE) }
+    }
 
     // Bridge/state that survives across recompositions and is written from
     // the WebView binder thread via post { } to the main thread.
@@ -133,6 +145,13 @@ fun ConversationView(
             container.onScrollChanged = { scrollY -> latestOnScrollChanged.value(scrollY) }
             container.onAppBarHeightChanged = { h -> latestOnAppBarHeightChanged.value(h) }
             container.onFocusedMessageChanged = { id -> latestOnFocusedMessageChanged.value(id) }
+            container.onGestureStateChanged = { state ->
+                val collector = latestPerfCollector.value
+                if (collector != null) {
+                    if (state == null) collector.removeState(PerfKeys.GESTURE)
+                    else collector.putState(PerfKeys.GESTURE, state)
+                }
+            }
             container.focusThresholdPx = focusThresholdPx
             controller?.container = container
 
@@ -148,12 +167,28 @@ fun ConversationView(
 
                     @JavascriptInterface
                     fun onGeometry(payloadJson: String) {
+                        latestPerfCollector.value?.recordBridgeCall(
+                            PerfCollector.BRIDGE_KIND_GEOMETRY
+                        )
                         container.onGeometryJson(payloadJson)
                     }
 
                     @JavascriptInterface
                     fun onViewport(scale: Float, pageTopCss: Float) {
+                        latestPerfCollector.value?.recordBridgeCall(
+                            PerfCollector.BRIDGE_KIND_VIEWPORT
+                        )
                         container.onViewportUpdate(scale, pageTopCss)
+                    }
+
+                    @JavascriptInterface
+                    fun onJsLongtask(durationMs: Double, name: String) {
+                        latestPerfCollector.value?.recordJsLongtask(durationMs, name)
+                    }
+
+                    @JavascriptInterface
+                    fun onJsFrameStats(fps: Int, longFrames: Int) {
+                        latestPerfCollector.value?.recordJsFrameStats(fps, longFrames)
                     }
                 },
                 "Bridge"

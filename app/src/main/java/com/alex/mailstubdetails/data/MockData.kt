@@ -586,9 +586,155 @@ private val BODY_FIX_CHAIN_HUGE = """
 </div>
 """.trimIndent()
 
+// ─── Long-thread generator (perf test) ─────────────────────────────────────
+//
+// Builds a 20-message retrospective thread with varied body shapes to stress
+// scroll / pinch / prev-next navigation across many overlays. Each message
+// has its own `appendMessage → formatMessageBody` path, so a long chain is
+// the right place to catch overlay-descriptor churn and header-focus
+// re-evaluations.
+
+private data class LongThreadPerson(val name: String, val email: String)
+
+private val LONG_THREAD_PEOPLE: List<LongThreadPerson> = listOf(
+    LongThreadPerson("Michael Chen", "m.chen@techcorp.com"),
+    LongThreadPerson("Sarah Kim", "s.kim@techcorp.com"),
+    LongThreadPerson("David Park", "d.park@techcorp.com"),
+    LongThreadPerson("Maria Lopez", "m.lopez@techcorp.com"),
+    LongThreadPerson("Hiroshi Tanaka", "h.tanaka@techcorp.com"),
+    LongThreadPerson("Emma Wilson", "e.wilson@techcorp.com"),
+    LongThreadPerson("Priya Patel", "p.patel@techcorp.com"),
+    LongThreadPerson("Lars Bergman", "l.bergman@techcorp.com"),
+    LongThreadPerson("Fatima Hassan", "f.hassan@techcorp.com"),
+    LongThreadPerson("Alex", "alex@mailstubdetails.com")
+)
+
+private fun longThreadBody(index: Int, author: String): String = when (index % 8) {
+    0 -> """
+        <div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#202124;">
+          <p>Quick note from me on the sprint retro — overall I think we hit the big goals, but there's room to tighten the mid-sprint check-ins. Posting raw observations here so we can group them tomorrow.</p>
+          <p>Biggest win: the API migration landed on Friday with zero rollback, which was the whole reason we front-loaded testing in week 1.</p>
+          <p>— $author</p>
+        </div>
+    """.trimIndent()
+    1 -> """
+        <div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#202124;">
+          <p>Agreed with the above. From the design side, these are the three things I want to flag:</p>
+          <ul>
+            <li><strong>Icons:</strong> the new icon set shipped two days late — not blocking, but it bled into QA time.</li>
+            <li><strong>Spec reviews:</strong> we need a short async pass before engineering starts. Twice this sprint we discovered edge cases on day 3.</li>
+            <li><strong>Dark mode:</strong> parity is at 94%. The remaining components are flagged in Figma; I'll finish them next sprint.</li>
+          </ul>
+          <p>— $author</p>
+        </div>
+    """.trimIndent()
+    2 -> """
+        <div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#202124;">
+          <p>I'll chime in on the backend side. We hit a surprise with the DB migration — had to add this guard before rolling forward:</p>
+          <pre style="background:#1e1e2e;color:#cdd6f4;padding:14px;border-radius:6px;font-size:12px;line-height:1.55;overflow-x:auto;">
+suspend fun migrateIfPending(scope: CoroutineScope) {
+    val pending = schemaStore.pendingMigrations()
+    if (pending.isEmpty()) return
+    scope.launch(Dispatchers.IO) {
+        runner.apply(pending, timeout = 2.minutes)
+    }.join()
+    logger.info("applied={} count={}", pending.map { it.id }, pending.size)
+}</pre>
+          <p>Lesson learned: never run migrations in the hot path of app start.</p>
+          <p>— $author</p>
+        </div>
+    """.trimIndent()
+    3 -> """
+        <div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#202124;">
+          <p>Jumping in with the metrics breakdown — attached would be nicer but inline for now:</p>
+          <table style="width:1200px;border-collapse:collapse;font-size:12px;margin:12px 0;">
+            <thead>
+              <tr style="background:#1a73e8;color:#fff;">
+                <th style="padding:8px 12px;text-align:left;">Metric</th>
+                <th style="padding:8px 12px;text-align:right;">Last sprint</th>
+                <th style="padding:8px 12px;text-align:right;">This sprint</th>
+                <th style="padding:8px 12px;text-align:right;">Δ</th>
+                <th style="padding:8px 12px;text-align:left;">Owner</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td style="padding:8px 12px;">PRs merged</td><td style="padding:8px 12px;text-align:right;">34</td><td style="padding:8px 12px;text-align:right;">41</td><td style="padding:8px 12px;text-align:right;color:#0f9d58;">+21%</td><td style="padding:8px 12px;">Platform</td></tr>
+              <tr style="background:#f8f9fa;"><td style="padding:8px 12px;">p90 CI time</td><td style="padding:8px 12px;text-align:right;">12m</td><td style="padding:8px 12px;text-align:right;">8m</td><td style="padding:8px 12px;text-align:right;color:#0f9d58;">-33%</td><td style="padding:8px 12px;">DevInfra</td></tr>
+              <tr><td style="padding:8px 12px;">Crash-free sessions</td><td style="padding:8px 12px;text-align:right;">99.1%</td><td style="padding:8px 12px;text-align:right;">99.4%</td><td style="padding:8px 12px;text-align:right;color:#0f9d58;">+0.3pp</td><td style="padding:8px 12px;">Mobile</td></tr>
+              <tr style="background:#f8f9fa;"><td style="padding:8px 12px;">Reopened bugs</td><td style="padding:8px 12px;text-align:right;">7</td><td style="padding:8px 12px;text-align:right;">11</td><td style="padding:8px 12px;text-align:right;color:#ea4335;">+57%</td><td style="padding:8px 12px;">QA</td></tr>
+            </tbody>
+          </table>
+          <p>Reopened bugs is the one I want us to dig into tomorrow.</p>
+          <p>— $author</p>
+        </div>
+    """.trimIndent()
+    4 -> """
+        <div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#202124;">
+          <p>Short one from me: huge thanks to the on-call rotation last week. Zero pages that spilled into the weekend, which hasn't happened in three sprints.</p>
+          <p>Also want to call out that the runbook updates from the previous retro paid off — new engineers found the right dashboards without pinging anyone.</p>
+          <p>— $author</p>
+        </div>
+    """.trimIndent()
+    5 -> """
+        <div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#202124;">
+          <p>Replying to the metrics table above — the reopened bugs count is almost entirely from the search flow. We shipped three fixes that each re-exposed a different edge case. I'll own a root-cause doc by Friday.</p>
+          <p>On the positive side, the dark-mode parity push unblocked the enterprise rollout; the design partner signed off this morning.</p>
+          <blockquote style="border-left:3px solid #dadce0;margin:12px 0;padding:4px 12px;color:#5f6368;font-style:italic;">
+            "Finally feels like the product has an identity in dark mode, not just an inverted palette." — Design partner
+          </blockquote>
+          <p>— $author</p>
+        </div>
+    """.trimIndent()
+    6 -> """
+        <div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#202124;">
+          <p>Quick visual from the perf lab (SVG, no remote fetch). The green curve is this sprint, grey is baseline — median scroll frame time down ~22%.</p>
+          <img width="1200" height="320" src="${svgDataUrl(1200, 320, "0f9d58", "scroll perf -22%")}" alt="perf chart">
+          <p>Breakdown post lives in the shared drive; happy to walk through on the call tomorrow.</p>
+          <p>— $author</p>
+        </div>
+    """.trimIndent()
+    else -> """
+        <div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;color:#202124;">
+          <p>Not much to add that hasn't been covered already — just +1 on the dark-mode and perf numbers. If we want a formal theme for next sprint, mine would be "pay down flake" — the test suite had a few noisy runs that cost us a day in aggregate.</p>
+          <p>Will file a doc with specific test IDs by EOD.</p>
+          <p>— $author</p>
+        </div>
+    """.trimIndent()
+}
+
+private fun buildLongThread(): EmailThread {
+    val subject = "Oct sprint retro — raw notes before tomorrow's sync"
+    val messages = (1..20).map { idx ->
+        val person = LONG_THREAD_PEOPLE[(idx - 1) % LONG_THREAD_PEOPLE.size]
+        val subj = if (idx == 1) subject else "Re: $subject"
+        // Stagger timestamps across two days so the thread looks organic.
+        val minutes = (idx - 1) * 13
+        val day = if (minutes >= 24 * 60) "Nov 7" else "Nov 6"
+        val timeOfDay = (9 * 60 + minutes) % (24 * 60)
+        val hh = (timeOfDay / 60).let { if (it > 12) it - 12 else if (it == 0) 12 else it }
+        val mm = (timeOfDay % 60).toString().padStart(2, '0')
+        val ampm = if (timeOfDay / 60 >= 12) "PM" else "AM"
+        EmailMessage(
+            id = "msg_long_${idx.toString().padStart(2, '0')}",
+            fromName = person.name,
+            fromEmail = person.email,
+            toList = listOf("sprint-team@techcorp.com"),
+            ccList = if (idx % 5 == 0) listOf("engineering-leads@techcorp.com") else emptyList(),
+            subject = subj,
+            date = "$day, $hh:$mm $ampm",
+            htmlBody = longThreadBody(idx - 1, person.name),
+            plainPreview = "Message $idx of 20 from ${person.name} — part of the Oct sprint retro thread.",
+            isRead = idx <= 3,
+            hasAttachment = idx == 4 || idx == 11
+        )
+    }
+    return EmailThread(id = "thread_long_20", subject = subject, messages = messages)
+}
+
 // ─── Threads ────────────────────────────────────────────────────────────────
 
 val MOCK_THREADS: List<EmailThread> = listOf(
+    buildLongThread(),
     EmailThread(
         id = "thread1",
         subject = "Q4 Planning Meeting — Action Required",

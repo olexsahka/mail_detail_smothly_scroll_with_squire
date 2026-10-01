@@ -10,6 +10,8 @@
  *   Bridge.onReady()
  *   Bridge.onGeometry(jsonPayload)
  *   Bridge.onViewport(scale, pageTopCss)  — realtime pinch/scroll from compositor
+ *   Bridge.onJsLongtask(durationMs, name) — PerformanceObserver longtask (>50ms)
+ *   Bridge.onJsFrameStats(fps, longFrames) — 1Hz rAF stats (fps, >1.5× budget frames)
  *
  * Native -> JS (invoked via WebView.evaluateJavascript):
  *   renderThread(jsonPayload)
@@ -427,6 +429,70 @@
         vv.addEventListener('resize', reportViewport);
     }
     window.addEventListener('scroll', reportViewport, { passive: true });
+
+    /* ── Perf: longtask + rAF frame stats → native ─────────────────────── */
+
+    // These probes close JankStats' blind spot: JankStats only sees the
+    // activity's SurfaceFlinger pipeline, not what happens inside the
+    // WebView compositor / JS. PerformanceObserver gives us JS tasks that
+    // held the main JS thread for >50 ms; the rAF counter tells us the
+    // WebView's actual frame cadence (which may differ from display rate
+    // if the compositor throttles).
+    try {
+        if (typeof PerformanceObserver === 'function' && window.Bridge
+            && typeof Bridge.onJsLongtask === 'function') {
+            var longtaskObserver = new PerformanceObserver(function (list) {
+                var entries = list.getEntries();
+                for (var i = 0; i < entries.length; i++) {
+                    var e = entries[i];
+                    var name = e.name || 'unknown';
+                    // attribution.containerName can locate iframes; mostly
+                    // not populated for same-origin tasks, but include it
+                    // when present so the native side has a hint.
+                    if (e.attribution && e.attribution[0] &&
+                        e.attribution[0].containerName) {
+                        name = name + ':' + e.attribution[0].containerName;
+                    }
+                    Bridge.onJsLongtask(e.duration, name);
+                }
+            });
+            // 'longtask' is a well-supported entry type; Chromium reports
+            // tasks that blocked the renderer main thread for ≥ 50 ms.
+            longtaskObserver.observe({ entryTypes: ['longtask'] });
+        }
+    } catch (_) { /* observer unsupported — skip silently */ }
+
+    (function startFrameCounter() {
+        if (!window.Bridge || typeof Bridge.onJsFrameStats !== 'function') return;
+        var frames = 0;
+        var longFrames = 0;
+        var lastTs = 0;
+        var windowStart = 0;
+        // Frame budget inside the WebView: match the display refresh when
+        // visualViewport exposes it (API-ish via performance timing), else
+        // assume 16.7 ms. We're looking for *relative* jank inside the
+        // WebView, so exact budget is less important than consistency.
+        var FRAME_BUDGET_MS = 16.7;
+        function tick(ts) {
+            if (windowStart === 0) {
+                windowStart = ts;
+                lastTs = ts;
+            } else {
+                var dt = ts - lastTs;
+                if (dt > FRAME_BUDGET_MS * 1.5) longFrames++;
+                lastTs = ts;
+                frames++;
+                if (ts - windowStart >= 1000) {
+                    Bridge.onJsFrameStats(frames, longFrames);
+                    frames = 0;
+                    longFrames = 0;
+                    windowStart = ts;
+                }
+            }
+            window.requestAnimationFrame(tick);
+        }
+        window.requestAnimationFrame(tick);
+    })();
 
     /* ── Lifecycle ─────────────────────────────────────────────────────── */
 

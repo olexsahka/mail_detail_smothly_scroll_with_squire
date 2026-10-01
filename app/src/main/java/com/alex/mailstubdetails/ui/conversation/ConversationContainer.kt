@@ -2,6 +2,8 @@ package com.alex.mailstubdetails.ui.conversation
 
 import android.animation.ValueAnimator
 import android.content.Context
+import androidx.core.animation.addListener
+import com.alex.mailstubdetails.perf.traced
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
@@ -115,6 +117,22 @@ class ConversationContainer @JvmOverloads constructor(
      */
     var onFocusedMessageChanged: (msgId: String?) -> Unit = {}
 
+    /**
+     * Fires the current interaction driving the container ("scroll",
+     * "pinch", "programmatic_scroll") or null when idle. Used by
+     * [com.alex.mailstubdetails.perf.PerfCollector] to slice JankStats
+     * summaries per gesture. Emits only on change.
+     */
+    var onGestureStateChanged: (state: String?) -> Unit = {}
+
+    private var gestureState: String? = null
+
+    private fun setGestureState(newState: String?) {
+        if (gestureState == newState) return
+        gestureState = newState
+        onGestureStateChanged(newState)
+    }
+
     private var focusedMsgId: String? = null
 
     /**
@@ -139,6 +157,11 @@ class ConversationContainer @JvmOverloads constructor(
         const val APP_BAR_OVERLAY_ID: String = "app-bar"
         /** Must match the id scheme produced by [OverlayDescriptorBuilder]. */
         internal const val HEADER_ID_PREFIX: String = "header:"
+
+        /** Values passed to [onGestureStateChanged] / consumed by JankStats. */
+        const val GESTURE_SCROLL: String = "scroll"
+        const val GESTURE_PINCH: String = "pinch"
+        const val GESTURE_PROGRAMMATIC_SCROLL: String = "programmatic_scroll"
 
         /** Duration of prev/next smooth scroll. */
         private const val SMOOTH_SCROLL_DURATION_MS: Long = 320L
@@ -362,31 +385,33 @@ class ConversationContainer @JvmOverloads constructor(
      */
     fun onViewportUpdate(scale: Float, pageTopCss: Float) {
         post {
-            val scaleChanged = scale != bridgeScale
-            bridgeScale = scale
-            bridgeHasValue = true
-            when {
-                pinchActive -> bridgePageTopCss = pageTopCss
-                scaleChanged -> {
-                    // Scale changed without an active pinch (double-tap zoom
-                    // or first-paint density scale). Re-anchor pageTop to the
-                    // current native scrollY at the new scale so we don't
-                    // carry over a stale prediction computed at the old scale.
-                    BridgePageTopMath.predict(webView.scrollY, scale, webView.initialScale)
-                        ?.let { bridgePageTopCss = it }
+            traced("onViewportUpdate") {
+                val scaleChanged = scale != bridgeScale
+                bridgeScale = scale
+                bridgeHasValue = true
+                when {
+                    pinchActive -> bridgePageTopCss = pageTopCss
+                    scaleChanged -> {
+                        // Scale changed without an active pinch (double-tap zoom
+                        // or first-paint density scale). Re-anchor pageTop to the
+                        // current native scrollY at the new scale so we don't
+                        // carry over a stale prediction computed at the old scale.
+                        BridgePageTopMath.predict(webView.scrollY, scale, webView.initialScale)
+                            ?.let { bridgePageTopCss = it }
+                    }
+                    // else: pure scroll report — native scrollListener already
+                    // keeps bridgePageTopCss fresh; ignoring JS avoids the race.
                 }
-                // else: pure scroll report — native scrollListener already
-                // keeps bridgePageTopCss fresh; ignoring JS avoids the race.
+                positionOverlays()
             }
-            positionOverlays()
         }
     }
 
-    private fun applyGeometry(payloadJson: String) {
+    private fun applyGeometry(payloadJson: String) = traced("applyGeometry") {
         try {
             val json = JSONObject(payloadJson)
             contentHeightCss = json.optDouble("contentHeight", 0.0).toFloat()
-            val arr = json.optJSONArray("overlays") ?: return
+            val arr = json.optJSONArray("overlays") ?: return@traced
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
                 val id = o.optString("id")
@@ -433,16 +458,26 @@ class ConversationContainer @JvmOverloads constructor(
                 // The user is now driving scroll themselves; hand focus
                 // tracking back to the autotracker.
                 focusOverrideMsgId = null
+                setGestureState(GESTURE_SCROLL)
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
-                if (ev.pointerCount >= 2) pinchActive = true
+                if (ev.pointerCount >= 2) {
+                    pinchActive = true
+                    setGestureState(GESTURE_PINCH)
+                }
             }
             MotionEvent.ACTION_POINTER_UP -> {
                 // pointerCount includes the pointer being lifted. When
                 // dropping back to 1 finger, the pinch is over.
-                if (ev.pointerCount <= 2) endPinch()
+                if (ev.pointerCount <= 2) {
+                    endPinch()
+                    setGestureState(GESTURE_SCROLL)
+                }
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> endPinch()
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                endPinch()
+                setGestureState(null)
+            }
         }
         return super.dispatchTouchEvent(ev)
     }
@@ -637,7 +672,7 @@ class ConversationContainer @JvmOverloads constructor(
      * previously caused a small overlay snap at the pinch → scroll
      * boundary.
      */
-    fun positionOverlays() {
+    fun positionOverlays() = traced("positionOverlays") {
         val initial = webView.initialScale.takeIf { it > 0f } ?: 1f
         val pinchFactor: Float = if (bridgeHasValue) {
             bridgeScale
@@ -779,9 +814,14 @@ class ConversationContainer @JvmOverloads constructor(
             return
         }
         scrollAnimator?.cancel()
+        setGestureState(GESTURE_PROGRAMMATIC_SCROLL)
         scrollAnimator = ValueAnimator.ofInt(webView.scrollY, targetY).apply {
             duration = SMOOTH_SCROLL_DURATION_MS
             interpolator = AccelerateDecelerateInterpolator()
+            addListener(
+                onEnd = { if (gestureState == GESTURE_PROGRAMMATIC_SCROLL) setGestureState(null) },
+                onCancel = { if (gestureState == GESTURE_PROGRAMMATIC_SCROLL) setGestureState(null) }
+            )
             addUpdateListener { anim ->
                 val y = anim.animatedValue as Int
                 webView.scrollTo(0, y)
@@ -833,12 +873,12 @@ class ConversationContainer @JvmOverloads constructor(
      * pinch tick would stall the WebView compositor and produce visible
      * flicker (bug reported 2026-08-26).
      */
-    private fun pushSpacerHeights() {
+    private fun pushSpacerHeights() = traced("pushSpacerHeights") {
         val initial = webView.initialScale
         // WebView reports 1.0 before onPageFinished sets the density-scale.
         // Skip pushing until we have a real value; onPageFinished re-fires
         // scaleListener → coordinator → this method with the correct scale.
-        if (initial <= 0f) return
+        if (initial <= 0f) return@traced
         for (o in overlays.values) {
             val measured = o.view.measuredHeight
             if (measured <= 0) continue

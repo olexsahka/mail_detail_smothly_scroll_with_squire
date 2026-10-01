@@ -471,6 +471,36 @@ Compose-state expandedIds меняется → recomposition → syncWebView:
 - Убедиться, что `endPinch()` вызывает рекалибровку `bridgePageTopCss = webView.scrollY / effectiveScale`. Без этого — источники pageTopCss рассинхронизированы на границе.
 - Если скачок остался — вероятно, компоузитор WebView сам двигает `scrollY` на 1-2 px в момент отпускания (settling). Это фундаментально; workaround — задержать первый `positionOverlays` в `endPinch` на 1 кадр через `postOnAnimation`, дать компоузитору устояться.
 
+### 13.5 Количественная оценка плавности — скилл `mailstub-perf-report`
+
+Для измерения скрола/зума в проект встроен Claude Code skill `mailstub-perf-report`. Он собирает воедино три источника данных и выдаёт сводный отчёт — удобно сравнивать «до/после» при оптимизациях.
+
+**Источники данных:**
+- **MailStubPerf logcat** — поток из `perf/PerfCollector.kt` (JankStats-метрики по жесту, bridge-rate JS↔Kotlin, JS longtask / rAF-статистика из `conversation.js`). Тег `MailStubPerf`.
+- **Perfetto trace** (опционально) — `android.os.Trace`-секции с префиксом `MailStub.*` (см. `perf/Trace.kt`). Позволяет посмотреть `MailStub.positionOverlays`, `MailStub.applyGeometry` и т.д. на таймлайне.
+- **`adb shell dumpsys gfxinfo`** (опционально) — HWUI-гистограммы по пакету `com.alex.mailstubdetails`.
+
+**Как запускать:**
+```
+/mailstub-perf-report
+```
+или на уже снятом `.logcat`-файле (как `samsung-SM-G990E-Android-16_*.logcat` в корне проекта).
+
+**Что ищем в отчёте:**
+- `summary[...] gesture=scroll` — p50/p90/p99 UI-кадра + jank %. Таргет: p90 ≤ 16 мс, jank < 5% на 120 Гц дисплее — соответственно ≤ 8 мс на 120 Гц.
+- `summary[...] gesture=pinch` — тот же breakdown, но для пинча. Отдельная корзина важна: пинч почти всегда даёт выше p99 из-за компоузиторного ресайза.
+- `bridge-rate viewport=N/s` — должен держаться близко к refresh rate во время жеста (60-120). Падение ниже 30/s = JS отстаёт, оверлеи дрейфят.
+- `js-longtask dur=... name=...` — любые > 50 мс задачи внутри WebView. Чаще всего это heavy reflow после `setSpacerHeight` или рендер большого вложения.
+- `jank ui=... gesture=...` — отдельные janky-кадры с состояниями: удобно для root-cause («все jank-ивые кадры случаются при `gesture=pinch screen=thread`»).
+
+**Workflow «до/после»:**
+1. Снять базовый прогон — проскролить/попинчить тред, сохранить logcat.
+2. Внести изменение.
+3. Снять второй прогон тем же сценарием.
+4. `/mailstub-perf-report` на обоих файлах → diff метрик.
+
+Коды состояний (`screen=...`, `gesture=...`), которыми тегируются кадры, собраны в `perf/PerfKeys.kt` — там же единственное место для добавления новых bucket'ов.
+
 ---
 
 ## 14. Итог
