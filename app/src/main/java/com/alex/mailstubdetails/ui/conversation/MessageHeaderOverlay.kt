@@ -1,11 +1,9 @@
 package com.alex.mailstubdetails.ui.conversation
 
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,7 +15,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.HorizontalDivider
@@ -33,7 +30,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -47,7 +43,6 @@ import com.alex.mailstubdetails.model.EmailMessage
  *                    thread. Drives layout: expanded shows a "details" chevron
  *                    that toggles a To/Cc/Bcc/Date block; collapsed shows a
  *                    one-line preview and inline date.
- * @param highlighted Transient "you just jumped here via prev/next" flag.
  * @param onToggle    Called when the row is tapped — expected to flip the
  *                    message's expansion state in the caller.
  *
@@ -71,19 +66,8 @@ fun MessageHeaderOverlay(
     message: EmailMessage,
     expanded: Boolean,
     onToggle: () -> Unit,
-    modifier: Modifier = Modifier,
-    highlighted: Boolean = false
+    modifier: Modifier = Modifier
 ) {
-    val borderColor by animateColorAsState(
-        targetValue = if (highlighted) {
-            MaterialTheme.colorScheme.primary
-        } else {
-            Color.Transparent
-        },
-        animationSpec = tween(durationMillis = if (highlighted) 150 else 800),
-        label = "headerHighlightBorder"
-    )
-
     // Local, per-message state. Survives config change so a rotation while
     // details are open doesn't snap them shut mid-animation. Reset whenever
     // the whole message collapses (see the `if (!expanded)` reset below is
@@ -100,7 +84,6 @@ fun MessageHeaderOverlay(
         modifier = modifier
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.surface)
-            .border(2.dp, borderColor, RoundedCornerShape(4.dp))
             .clickable(onClick = onToggle)
             .padding(horizontal = 16.dp, vertical = 12.dp)
     ) {

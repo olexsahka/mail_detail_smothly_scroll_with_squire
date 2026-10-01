@@ -45,14 +45,7 @@ data class OverlayDescriptor(
     val id: String,
     val kind: OverlayKind,
     val msgId: String?,
-    val expanded: Boolean,
-    /**
-     * Transient "you just jumped here" flag driven by the prev/next arrows
-     * in the app bar. Only meaningful for [OverlayKind.MESSAGE_HEADER];
-     * ignored for other kinds. When flipped true, the overlay renders an
-     * animated border; auto-clears after ~1.5s in [ConversationScreen].
-     */
-    val highlighted: Boolean = false
+    val expanded: Boolean
 )
 
 /**
@@ -84,10 +77,6 @@ fun rememberConversationController(): ConversationController =
  * this with `MessageHeaderOverlay`, `MessageFooterOverlay`, and the large
  * app bar. For now we ship a placeholder so B3 can be verified visually.
  *
- * @param highlightedMsgId    Transient "you just jumped here" marker set by
- *   the screen when a prev/next arrow was tapped. Propagates into the
- *   matching header descriptor's `highlighted` flag (see
- *   [OverlayDescriptorBuilder.build]).
  * @param focusThresholdPx    Device-px y coordinate the container uses to
  *   decide which message is currently focused (typically the compact app
  *   bar's height, so a header sliding under it becomes "current").
@@ -104,7 +93,6 @@ fun ConversationView(
     expandedIds: Set<String>,
     loadedIds: Set<String>,
     modifier: Modifier = Modifier,
-    highlightedMsgId: String? = null,
     focusThresholdPx: Int = 0,
     onScrollChanged: (scrollY: Int) -> Unit = {},
     onAppBarHeightChanged: (heightPx: Int) -> Unit = {},
@@ -112,8 +100,8 @@ fun ConversationView(
     controller: ConversationController? = null,
     overlayContent: @Composable (OverlayDescriptor) -> Unit = { DefaultOverlayPlaceholder(it) }
 ) {
-    val descriptors = remember(thread, expandedIds, loadedIds, highlightedMsgId) {
-        OverlayDescriptorBuilder.build(thread, expandedIds, loadedIds, highlightedMsgId)
+    val descriptors = remember(thread, expandedIds, loadedIds) {
+        OverlayDescriptorBuilder.build(thread, expandedIds, loadedIds)
     }
     val latestOverlayContent = rememberUpdatedState(overlayContent)
     val latestOnScrollChanged = rememberUpdatedState(onScrollChanged)

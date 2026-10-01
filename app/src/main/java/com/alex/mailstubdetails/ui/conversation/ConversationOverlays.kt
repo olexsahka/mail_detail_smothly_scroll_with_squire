@@ -47,7 +47,6 @@ fun ConversationOverlaySlot(
             MessageHeaderOverlay(
                 message = msg,
                 expanded = descriptor.expanded,
-                highlighted = descriptor.highlighted,
                 onToggle = { onToggleMessage(msg.id) }
             )
         }

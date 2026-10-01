@@ -15,7 +15,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -45,11 +44,6 @@ import com.alex.mailstubdetails.ui.conversation.rememberConversationController
 // snaps in.
 private const val FAKE_LOAD_DELAY_MS_MIN = 550L
 private const val FAKE_LOAD_DELAY_MS_JITTER = 350L
-
-// How long the primary-color highlight border stays visible after the user
-// taps a prev/next arrow. Matches the "flash and fade" pattern from Gmail —
-// long enough to notice, short enough not to feel sticky.
-private const val JUMP_HIGHLIGHT_DURATION_MS = 1500L
 
 // Vertical distance the pinned title slides while fading in — chosen to
 // look like it rises "from under the bar" without covering the icons.
@@ -126,15 +120,6 @@ fun ConversationScreen(
     var focusedMsgId by remember(thread.id) {
         mutableStateOf(thread.messages.first().id)
     }
-    // Transient "you just jumped here" marker for the header border. Set on
-    // arrow tap, auto-cleared after JUMP_HIGHLIGHT_DURATION_MS.
-    var highlightedMsgId by remember(thread.id) { mutableStateOf<String?>(null) }
-    LaunchedEffect(highlightedMsgId, thread.id) {
-        if (highlightedMsgId != null) {
-            delay(JUMP_HIGHLIGHT_DURATION_MS)
-            highlightedMsgId = null
-        }
-    }
 
     val controller = rememberConversationController()
 
@@ -143,10 +128,41 @@ fun ConversationScreen(
     val hasPrev = currentIndex > 0
     val hasNext = currentIndex in 0 until thread.messages.lastIndex
 
+    // Expand + kick off fake-load for a message if currently collapsed.
+    // Same path as a header tap, minus the collapse branch — prev/next
+    // must never collapse the target.
+    val expandIfCollapsed: (String) -> Unit = { msgId ->
+        if (msgId !in expandedIds) {
+            val result = ConversationStateReducer.toggle(
+                msgId = msgId,
+                expanded = expandedIds,
+                loaded = loadedIds,
+                pending = pendingLoads
+            )
+            expandedIds = result.expanded
+            pendingLoads = result.pending
+            if (result.shouldStartLoad) {
+                loadScope.launch {
+                    delay(
+                        FAKE_LOAD_DELAY_MS_MIN +
+                            Random.nextLong(FAKE_LOAD_DELAY_MS_JITTER)
+                    )
+                    val done = ConversationStateReducer.markLoaded(
+                        msgId = msgId,
+                        loaded = loadedIds,
+                        pending = pendingLoads
+                    )
+                    loadedIds = done.loaded
+                    pendingLoads = done.pending
+                }
+            }
+        }
+    }
+
     fun jumpTo(targetIndex: Int) {
         val target = thread.messages.getOrNull(targetIndex) ?: return
         controller.scrollToMessage(target.id)
-        highlightedMsgId = target.id
+        expandIfCollapsed(target.id)
     }
     val onPrev: () -> Unit = { jumpTo(currentIndex - 1) }
     val onNext: () -> Unit = { jumpTo(currentIndex + 1) }
@@ -161,7 +177,6 @@ fun ConversationScreen(
                 thread = thread,
                 expandedIds = expandedIds,
                 loadedIds = loadedIds,
-                highlightedMsgId = highlightedMsgId,
                 focusThresholdPx = staticBarHeightPx,
                 modifier = Modifier.fillMaxSize(),
                 onScrollChanged = { scrollY = it },

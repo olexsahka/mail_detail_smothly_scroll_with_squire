@@ -369,7 +369,18 @@ Compose-state expandedIds меняется → recomposition → syncWebView:
 
 Не делаем `renderThread` при expand/collapse — это порвало бы скролл-позицию. Точечная мутация в JS сохраняет её.
 
-### 10.4 Descriptor cache
+### 10.4 Prev/next навигация в треде
+
+Стрелки в compact app bar (`KeyboardArrowUp` / `KeyboardArrowDown` в `ConversationScreen`) и в `LargeAppBarOverlay`:
+
+- Текущая позиция (`focusedMsgId`) = последний хедер, прошедший под компакт-баром. Фиксируется callback'ом `onFocusedMessageChanged` из `ConversationContainer` (срабатывает на `scroll` и `endPinch`).
+- Тап по стрелке делает две вещи атомарно:
+  1. `ConversationController.scrollToMessage(targetId)` — плавный скролл (`SMOOTH_SCROLL_DURATION_MS = 320L`) к спейсеру целевого хедера. Контейнер пинит фокус на target до следующего пользовательского касания (`focusOverrideMsgId`, см. §9), иначе на коротких тредах с «недотягиванием» до порога фокуса `hasNext`/`hasPrev` могут не продвинуться после первого же тапа.
+  2. Если целевое письмо свёрнуто — разворачиваем ту же цепочкой, что и тап по хедеру: `ConversationStateReducer.toggle` → при необходимости fake-load → `setMessageLoaded`.
+
+Никакой подсветки хедера. Ориентир пользователя — сам факт скролла и раскрытия тела письма.
+
+### 10.5 Descriptor cache
 
 В `ConversationView.kt` кешируются `ComposeView`-ы оверлеев по id, чтобы `setContent` не вызывался лишний раз (это перезапускает композицию). Гард: `if (lastRenderedDescriptors[d.id] != d) { setContent(...) }`. Иначе при пинче, где `syncWebView` может тригериться, шли бы constantly re-composition оверлеев.
 
