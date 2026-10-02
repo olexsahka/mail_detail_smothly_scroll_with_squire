@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.MyApplication" parent="android:Theme.Material.Light.NoActionBar" />
+    <!-- AppCompat DayNight so AppCompatDelegate.setLocalNightMode flips the
+         Activity's uiMode on the fly. Required for WebSettingsCompat
+         .setAlgorithmicDarkeningAllowed(true) to actually invert content:
+         Chromium walks up to Activity resources, our wrapped context alone
+         isn't enough. -->
+    <style name="Theme.MyApplication" parent="Theme.AppCompat.DayNight.NoActionBar" />
 </resources>

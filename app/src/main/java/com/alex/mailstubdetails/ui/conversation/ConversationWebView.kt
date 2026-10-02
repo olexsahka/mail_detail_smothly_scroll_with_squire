@@ -4,12 +4,16 @@ import android.annotation.SuppressLint
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
+import android.graphics.Color
 import android.net.Uri
 import android.util.AttributeSet
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewFeature
 
 /**
  * The single scrollable WebView that owns the conversation surface.
@@ -90,6 +94,68 @@ class ConversationWebView @JvmOverloads constructor(
         // Intercept: keep our internal client, forward everything else via delegate.
         clientDelegate = client
     }
+
+    /** Last applied dark-mode flag; dedup for [setBodyDarkMode]. */
+    private var lastDarkMode: Boolean? = null
+
+    /**
+     * Flip the WebView's dark-mode state via WebSettingsCompat. Three
+     * gated API calls, same shape as the legacy pattern that worked
+     * pre-targetSdk-T:
+     *   • setForceDark — honored on old Chromium / pre-T apps, no-op on T+.
+     *   • setForceDarkStrategy — same gating; picks USER_AGENT_DARKENING_ONLY
+     *     because our HTML has no dark CSS theme to prefer over invert.
+     *   • setAlgorithmicDarkeningAllowed — the post-T knob. Only takes
+     *     effect when the host Activity's resources config is in
+     *     UI_MODE_NIGHT_YES — that's why ConversationScreen pairs this
+     *     call with AppCompatDelegate.setLocalNightMode(MODE_NIGHT_YES).
+     *     Just wrapping our local Context in a night-mode
+     *     createConfigurationContext() isn't enough: Chromium walks up
+     *     to Activity resources for the night-mode check.
+     *
+     * Also flips the background color — avoids a flash of the opposite
+     * palette between a DOM rebuild and the compositor's first frame
+     * under the new theme.
+     */
+    fun setBodyDarkMode(darkMode: Boolean) {
+        if (lastDarkMode == darkMode) return
+        lastDarkMode = darkMode
+
+        setBackgroundColor(if (darkMode) Color.BLACK else Color.WHITE)
+
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
+            @Suppress("DEPRECATION")
+            WebSettingsCompat.setForceDark(
+                settings,
+                if (darkMode) WebSettingsCompat.FORCE_DARK_ON
+                else WebSettingsCompat.FORCE_DARK_OFF
+            )
+        }
+
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)) {
+            @Suppress("DEPRECATION")
+            WebSettingsCompat.setForceDarkStrategy(
+                settings,
+                WebSettingsCompat.DARK_STRATEGY_USER_AGENT_DARKENING_ONLY
+            )
+        }
+
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
+            WebSettingsCompat.setAlgorithmicDarkeningAllowed(settings, darkMode)
+        }
+
+        invalidate()
+    }
+
+    /**
+     * Reports whether the Activity hosting this WebView currently has
+     * its uiMode set to UI_MODE_NIGHT_YES. Useful for diagnostics /
+     * sanity-checks when debugging the dark-mode toggle.
+     */
+    @Suppress("unused")
+    val isInNightModeContext: Boolean
+        get() = (context.resources.configuration.uiMode and
+            Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
 
     override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) {
         super.onScrollChanged(l, t, oldl, oldt)

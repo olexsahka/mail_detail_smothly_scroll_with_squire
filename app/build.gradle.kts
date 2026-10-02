@@ -50,6 +50,8 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.metrics.performance)
+    implementation(libs.androidx.webkit)
+    implementation(libs.androidx.appcompat)
     implementation("androidx.compose.material:material-icons-extended")
     testImplementation(libs.junit)
     // org.json is provided at runtime by Android but not on the JVM
