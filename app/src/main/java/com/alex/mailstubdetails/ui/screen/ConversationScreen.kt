@@ -1,12 +1,15 @@
 package com.alex.mailstubdetails.ui.screen
 
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -90,6 +93,15 @@ fun ConversationScreen(
     // toggles reuse the same coroutine's result.
     var pendingLoads by remember(thread.id) { mutableStateOf(emptySet<String>()) }
     val loadScope = rememberCoroutineScope()
+
+    // Message-body dark toggle. Only inverts the HTML body (via `.dark-body`
+    // CSS — see conversation.js#setBodyDarkMode). Native overlays
+    // (headers/footers/bars) keep following the global MailStubTheme.
+    // Initial value defaults to the system theme so a white message body
+    // doesn't clash with dark Compose chrome on first open; the toolbar
+    // icon lets the user override it for the current session.
+    val systemDark = isSystemInDarkTheme()
+    var bodyDarkMode by remember { mutableStateOf(systemDark) }
 
     var scrollY by remember { mutableIntStateOf(0) }
     // Subject Text top / bottom Y offset in device px, relative to top of
@@ -178,6 +190,7 @@ fun ConversationScreen(
                 expandedIds = expandedIds,
                 loadedIds = loadedIds,
                 focusThresholdPx = staticBarHeightPx,
+                bodyDarkMode = bodyDarkMode,
                 modifier = Modifier.fillMaxSize(),
                 onScrollChanged = { scrollY = it },
                 onFocusedMessageChanged = { id -> if (id != null) focusedMsgId = id },
@@ -220,6 +233,8 @@ fun ConversationScreen(
                         hasNext = hasNext,
                         onPrev = onPrev,
                         onNext = onNext,
+                        bodyDarkMode = bodyDarkMode,
+                        onToggleBodyDarkMode = { bodyDarkMode = !bodyDarkMode },
                         onHeroSubjectBoundsChanged = { top, bottom ->
                             heroSubjectTopPx = top
                             heroSubjectBottomPx = bottom
@@ -238,6 +253,8 @@ fun ConversationScreen(
                 onPrev = onPrev,
                 onNext = onNext,
                 showNav = thread.messageCount > 1,
+                bodyDarkMode = bodyDarkMode,
+                onToggleBodyDarkMode = { bodyDarkMode = !bodyDarkMode },
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .onSizeChanged { staticBarHeightPx = it.height }
@@ -258,6 +275,8 @@ private fun CompactAppBar(
     onPrev: () -> Unit,
     onNext: () -> Unit,
     showNav: Boolean,
+    bodyDarkMode: Boolean,
+    onToggleBodyDarkMode: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     TopAppBar(
@@ -297,6 +316,20 @@ private fun CompactAppBar(
                 IconButton(onClick = onNext, enabled = hasNext) {
                     Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Next message")
                 }
+            }
+            IconButton(onClick = onToggleBodyDarkMode) {
+                Icon(
+                    imageVector = if (bodyDarkMode) {
+                        Icons.Default.LightMode
+                    } else {
+                        Icons.Default.DarkMode
+                    },
+                    contentDescription = if (bodyDarkMode) {
+                        "Switch message body to light theme"
+                    } else {
+                        "Switch message body to dark theme"
+                    }
+                )
             }
             IconButton(onClick = onMore) {
                 Icon(Icons.Default.MoreVert, contentDescription = "More")

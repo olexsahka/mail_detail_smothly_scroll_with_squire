@@ -10,8 +10,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -63,6 +65,8 @@ fun LargeAppBarOverlay(
     hasNext: Boolean = false,
     onPrev: () -> Unit = {},
     onNext: () -> Unit = {},
+    bodyDarkMode: Boolean = false,
+    onToggleBodyDarkMode: () -> Unit = {},
     onSubjectBoundsChanged: (topPx: Int, bottomPx: Int) -> Unit = { _, _ -> }
 ) {
     val showNav = messageCount > 1
@@ -98,6 +102,20 @@ fun LargeAppBarOverlay(
                         contentDescription = "Next message"
                     )
                 }
+            }
+            IconButton(onClick = onToggleBodyDarkMode) {
+                Icon(
+                    imageVector = if (bodyDarkMode) {
+                        Icons.Default.LightMode
+                    } else {
+                        Icons.Default.DarkMode
+                    },
+                    contentDescription = if (bodyDarkMode) {
+                        "Switch message body to light theme"
+                    } else {
+                        "Switch message body to dark theme"
+                    }
+                )
             }
             IconButton(onClick = onMore) {
                 Icon(Icons.Default.MoreVert, contentDescription = "More")

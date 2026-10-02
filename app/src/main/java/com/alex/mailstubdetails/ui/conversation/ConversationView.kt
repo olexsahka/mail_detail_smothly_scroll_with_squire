@@ -94,6 +94,7 @@ fun ConversationView(
     loadedIds: Set<String>,
     modifier: Modifier = Modifier,
     focusThresholdPx: Int = 0,
+    bodyDarkMode: Boolean = false,
     onScrollChanged: (scrollY: Int) -> Unit = {},
     onAppBarHeightChanged: (heightPx: Int) -> Unit = {},
     onFocusedMessageChanged: (msgId: String?) -> Unit = {},
@@ -215,6 +216,7 @@ fun ConversationView(
             bridgeState.pendingThread = thread
             bridgeState.pendingExpandedIds = expandedIds
             bridgeState.pendingLoadedIds = loadedIds
+            bridgeState.pendingBodyDarkMode = bodyDarkMode
             syncWebView(container, bridgeState)
         },
         onRelease = { container ->
@@ -245,9 +247,15 @@ private class BridgeState {
     var pendingThread: EmailThread? = null
     var pendingExpandedIds: Set<String> = emptySet()
     var pendingLoadedIds: Set<String> = emptySet()
+    var pendingBodyDarkMode: Boolean = false
     var lastSentThreadId: String? = null
     var lastSentExpandedIds: Set<String> = emptySet()
     var lastSentLoadedIds: Set<String> = emptySet()
+    // Nullable so the first sync pushes the flag even when it's false
+    // (default state in JS is `undefined` ≠ false, and renderThread fires
+    // before our dark-mode sync — so without this the user's "light" default
+    // would never be explicitly applied on first ready).
+    var lastSentBodyDarkMode: Boolean? = null
 }
 
 private fun syncWebView(container: ConversationContainer, state: BridgeState) {
@@ -307,6 +315,15 @@ private fun syncWebView(container: ConversationContainer, state: BridgeState) {
             )
         }
         state.lastSentLoadedIds = loaded
+    }
+
+    val darkMode = state.pendingBodyDarkMode
+    if (state.lastSentBodyDarkMode != darkMode) {
+        container.webView.evaluateJavascript(
+            "setBodyDarkMode($darkMode)",
+            null
+        )
+        state.lastSentBodyDarkMode = darkMode
     }
 }
 

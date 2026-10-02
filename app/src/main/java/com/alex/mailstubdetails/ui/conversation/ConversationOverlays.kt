@@ -28,6 +28,8 @@ fun ConversationOverlaySlot(
     hasNext: Boolean = false,
     onPrev: () -> Unit = {},
     onNext: () -> Unit = {},
+    bodyDarkMode: Boolean = false,
+    onToggleBodyDarkMode: () -> Unit = {},
     onHeroSubjectBoundsChanged: (topPx: Int, bottomPx: Int) -> Unit = { _, _ -> }
 ) {
     when (descriptor.kind) {
@@ -40,6 +42,8 @@ fun ConversationOverlaySlot(
             hasNext = hasNext,
             onPrev = onPrev,
             onNext = onNext,
+            bodyDarkMode = bodyDarkMode,
+            onToggleBodyDarkMode = onToggleBodyDarkMode,
             onSubjectBoundsChanged = onHeroSubjectBoundsChanged
         )
         OverlayKind.MESSAGE_HEADER -> {

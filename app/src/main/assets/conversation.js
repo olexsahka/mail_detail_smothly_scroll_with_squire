@@ -17,6 +17,7 @@
  *   renderThread(jsonPayload)
  *   toggleExpanded(msgId)
  *   setSpacerHeight(overlayId, cssPx)
+ *   setBodyDarkMode(enabled)
  *   measurePositions()
  */
 
@@ -407,6 +408,14 @@
     // Exposed so fixLayout.js can request a fresh geometry report after it
     // finishes mutating message-body DOM (wrapping tables, scaling images).
     window.scheduleMeasure = scheduleMeasure;
+
+    // Toggle the body-only dark theme (see .dark-body rules in the HTML
+    // template). The flag lives on <body>, which renderThread does NOT
+    // rebuild (only #conversation.innerHTML), so the class survives a full
+    // thread re-render without extra work on the native side.
+    window.setBodyDarkMode = function (enabled) {
+        document.body.classList.toggle('dark-body', !!enabled);
+    };
 
     /* ── Realtime viewport reporter (visualViewport) ───────────────────── */
 
