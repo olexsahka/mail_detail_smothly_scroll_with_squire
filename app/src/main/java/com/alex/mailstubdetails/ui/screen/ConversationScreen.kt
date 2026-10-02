@@ -1,5 +1,10 @@
 package com.alex.mailstubdetails.ui.screen
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AppCompatDelegate
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -31,6 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -94,14 +100,30 @@ fun ConversationScreen(
     var pendingLoads by remember(thread.id) { mutableStateOf(emptySet<String>()) }
     val loadScope = rememberCoroutineScope()
 
-    // Message-body dark toggle. Only inverts the HTML body (via `.dark-body`
-    // CSS — see conversation.js#setBodyDarkMode). Native overlays
-    // (headers/footers/bars) keep following the global MailStubTheme.
-    // Initial value defaults to the system theme so a white message body
-    // doesn't clash with dark Compose chrome on first open; the toolbar
-    // icon lets the user override it for the current session.
+    // Message-body dark toggle. Drives three things in lockstep when the
+    // user taps the toolbar icon:
+    //   1. WebView.setBodyDarkMode (WebSettingsCompat path).
+    //   2. AppCompatDelegate.setLocalNightMode on the host Activity —
+    //      flips Activity resources to UI_MODE_NIGHT_YES so Chromium's
+    //      setAlgorithmicDarkeningAllowed(true) actually inverts on T+.
+    //   3. The entire Compose chrome (toolbars, inbox after back, etc.)
+    //      because MailStubTheme follows isSystemInDarkTheme() which
+    //      reads from the (now overridden) Activity config.
+    //
+    // Initial value follows the current config so returning to the
+    // screen doesn't surprise-flip the Activity theme.
+    val context = LocalContext.current
+    val activity = remember(context) { context.findAppCompatActivity() }
     val systemDark = isSystemInDarkTheme()
     var bodyDarkMode by remember { mutableStateOf(systemDark) }
+
+    val toggleBodyDarkMode: () -> Unit = {
+        val next = !bodyDarkMode
+        bodyDarkMode = next
+        activity?.delegate?.localNightMode =
+            if (next) AppCompatDelegate.MODE_NIGHT_YES
+            else AppCompatDelegate.MODE_NIGHT_NO
+    }
 
     var scrollY by remember { mutableIntStateOf(0) }
     // Subject Text top / bottom Y offset in device px, relative to top of
@@ -234,7 +256,7 @@ fun ConversationScreen(
                         onPrev = onPrev,
                         onNext = onNext,
                         bodyDarkMode = bodyDarkMode,
-                        onToggleBodyDarkMode = { bodyDarkMode = !bodyDarkMode },
+                        onToggleBodyDarkMode = toggleBodyDarkMode,
                         onHeroSubjectBoundsChanged = { top, bottom ->
                             heroSubjectTopPx = top
                             heroSubjectBottomPx = bottom
@@ -254,7 +276,7 @@ fun ConversationScreen(
                 onNext = onNext,
                 showNav = thread.messageCount > 1,
                 bodyDarkMode = bodyDarkMode,
-                onToggleBodyDarkMode = { bodyDarkMode = !bodyDarkMode },
+                onToggleBodyDarkMode = toggleBodyDarkMode,
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .onSizeChanged { staticBarHeightPx = it.height }
@@ -336,4 +358,16 @@ private fun CompactAppBar(
             }
         }
     )
+}
+
+/**
+ * Walks the ContextWrapper chain until it finds an [AppCompatActivity].
+ * Returns null when the Compose preview context, or any non-AppCompat
+ * host, is in use — callers must no-op gracefully.
+ */
+private tailrec fun Context.findAppCompatActivity(): AppCompatActivity? = when (this) {
+    is AppCompatActivity -> this
+    is ContextWrapper -> baseContext.findAppCompatActivity()
+    is Activity -> null
+    else -> null
 }

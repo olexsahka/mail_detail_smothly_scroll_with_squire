@@ -183,6 +183,15 @@ fun ConversationView(
                 "Bridge"
             )
 
+            // Apply dark-mode BEFORE loadUrl so the WebView's background
+            // and WebSettings are in the right state when the first frame
+            // of the template renders. Otherwise opening a thread while
+            // bodyDarkMode=true flashes the template's light palette for
+            // one frame before algorithmic darkening kicks in on the next
+            // compositor pass.
+            container.webView.setBodyDarkMode(bodyDarkMode)
+            bridgeState.pendingBodyDarkMode = bodyDarkMode
+
             container.webView.loadUrl(ConversationTemplateBuilder.TEMPLATE_URL)
             container
         },
@@ -251,11 +260,6 @@ private class BridgeState {
     var lastSentThreadId: String? = null
     var lastSentExpandedIds: Set<String> = emptySet()
     var lastSentLoadedIds: Set<String> = emptySet()
-    // Nullable so the first sync pushes the flag even when it's false
-    // (default state in JS is `undefined` ≠ false, and renderThread fires
-    // before our dark-mode sync — so without this the user's "light" default
-    // would never be explicitly applied on first ready).
-    var lastSentBodyDarkMode: Boolean? = null
 }
 
 private fun syncWebView(container: ConversationContainer, state: BridgeState) {
@@ -317,14 +321,10 @@ private fun syncWebView(container: ConversationContainer, state: BridgeState) {
         state.lastSentLoadedIds = loaded
     }
 
-    val darkMode = state.pendingBodyDarkMode
-    if (state.lastSentBodyDarkMode != darkMode) {
-        container.webView.evaluateJavascript(
-            "setBodyDarkMode($darkMode)",
-            null
-        )
-        state.lastSentBodyDarkMode = darkMode
-    }
+    // Dark-mode is applied directly on the WebView via WebSettingsCompat
+    // (see ConversationWebView.setBodyDarkMode) — no JS roundtrip. The
+    // method dedupes internally, so an unconditional call per sync is fine.
+    container.webView.setBodyDarkMode(state.pendingBodyDarkMode)
 }
 
 /* ── Placeholder overlay (replaced by Phase C) ─────────────────────────── */
